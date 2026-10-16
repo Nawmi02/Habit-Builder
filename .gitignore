@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Django
+*.sqlite3
+staticfiles/
+media/
+celerybeat-schedule*
+
+# Secrets (Never Commit)
+.env
+firebase*.json
+*service-account*.json
+
+# Tests / tools
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
