@@ -44,6 +44,31 @@ class HabitOccurrenceSerializer(serializers.ModelSerializer):
         read_only_fields = ["occurrence_id", "habit_id"]
 
 
+class HabitOccurrenceDetailSerializer(serializers.ModelSerializer):
+    """
+    Detailed occurrence with nested habit info.
+    Used in the checklist endpoint.
+    """
+    occurrence_id = serializers.IntegerField(source="pk", read_only=True)
+    habit_id = serializers.IntegerField(source="habit.pk", read_only=True)
+    name = serializers.CharField(source="habit.name", read_only=True)
+    icon = serializers.CharField(source="habit.icon", read_only=True)
+    color = serializers.CharField(source="habit.color", read_only=True)
+    habit_type = serializers.CharField(source="habit.habit_type", read_only=True)
+    target_type = serializers.CharField(source="habit.target_type", read_only=True)
+    target_value = serializers.IntegerField(source="habit.target_value", read_only=True)
+    target_unit = serializers.CharField(source="habit.target_unit", read_only=True)
+    time_of_day = serializers.CharField(source="habit.time_of_day", read_only=True)
+
+    class Meta:
+        model = HabitOccurrence
+        fields = [
+            "occurrence_id", "habit_id", "name", "icon", "color",
+            "habit_type", "target_type", "target_value", "target_unit",
+            "time_of_day", "scheduled_date", "deadline_at", "status",
+        ]
+
+
 class HabitSerializer(serializers.ModelSerializer):
     habit_id = serializers.IntegerField(source="pk", read_only=True)
     user_id = serializers.IntegerField(source="user.pk", read_only=True)
