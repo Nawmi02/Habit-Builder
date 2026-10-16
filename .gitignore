@@ -10,6 +10,15 @@ staticfiles/
 media/
 celerybeat-schedule*
 
+# PostgreSQL
+pgdata/
+*.dump
+*.backup
+
+# Docker
+.docker/
+docker-compose.override.yml
+
 # Secrets (Never Commit)
 .env
 firebase*.json
