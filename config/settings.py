@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "drf_spectacular",
     "corsheaders",
+    "django_celery_beat", 
     # Local apps
     "apps.users",
     "apps.habits",
@@ -147,3 +148,12 @@ SPECTACULAR_SETTINGS = {
 
 # CORS (for Expo web testing)
 CORS_ALLOW_ALL_ORIGINS = True if DEBUG else False
+
+# ============================================
+# Celery
+# ============================================
+CELERY_BROKER_URL = env("REDIS_URL", default="redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = env("REDIS_URL", default="redis://localhost:6379/0")
+CELERY_TIMEZONE = "UTC"
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 min
