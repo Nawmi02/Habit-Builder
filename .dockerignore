@@ -1,0 +1,15 @@
+.git
+.gitignore
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.vscode/
+.idea/
+*.sqlite3
+staticfiles/
+media/
+celerybeat-schedule*
+.pytest_cache/
+htmlcov/

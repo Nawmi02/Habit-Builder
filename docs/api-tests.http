@@ -1,0 +1,124 @@
+### Habit Builder - Entity 10-13 API tests
+### VS Code extension "REST Client" (by Huachao Mao) lagbe.
+### Protiti request er upore "Send Request" e click koro, upor theke niche order e.
+### Server chalu thakte hobe: python manage.py runserver
+
+@baseUrl = http://127.0.0.1:8000/api
+@token = {{login.response.body.access}}
+
+### 1. Register (ekbar-i; abar chalale "email already exists" ashbe, tokhon 2 no chalao)
+POST {{baseUrl}}/auth/register/
+Content-Type: application/json
+
+{
+  "email": "test@habit.com",
+  "name": "Test User",
+  "password": "pass12345",
+  "time_zone": "Asia/Dhaka"
+}
+
+### 2. Login -> access token nije nije niche use hobe
+# @name login
+POST {{baseUrl}}/auth/login/
+Content-Type: application/json
+
+{
+  "email": "test@habit.com",
+  "password": "pass12345"
+}
+
+
+
+### ---------------- ENTITY 11 + 12: BADGE / USER_BADGE ----------------
+
+### 3. Shob badge (4 ta ashbe, unlocked: false)
+GET {{baseUrl}}/badges/
+Authorization: Bearer {{token}}
+
+### 4. Amar unlock kora badge (shuru te [])
+GET {{baseUrl}}/badges/mine/
+Authorization: Bearer {{token}}
+
+### 5. Badge banano jay na -> 405 ashbe (thik ache)
+POST {{baseUrl}}/badges/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "code": "hack", "name": "Hack" }
+
+### ---------------- ENTITY 10: POINT_TRANSACTION ----------------
+
+### 6. Point summary (shuru te total_points: 0, level: 1)
+GET {{baseUrl}}/points/summary/
+Authorization: Bearer {{token}}
+
+### 7. Point history
+GET {{baseUrl}}/points/
+Authorization: Bearer {{token}}
+
+### 8. Shudhu COMPLETION type
+GET {{baseUrl}}/points/?related_type=COMPLETION
+Authorization: Bearer {{token}}
+
+### ---------------- Habit complete kore point paoa ----------------
+
+### 9. Ekta daily habit banao (aj theke)  -> response er habit_id dekho
+# @name habit
+POST {{baseUrl}}/habits/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "Read",
+  "habit_type": "GOOD",
+  "target_type": "YES_NO",
+  "time_of_day": "MORNING",
+  "start_date": "2026-10-18",
+  "schedule": { "frequency_type": "DAILY" }
+}
+
+### 10. Ajker checklist -> occurrence_id dekho (completion banate lagbe)
+GET {{baseUrl}}/habits/checklist/
+Authorization: Bearer {{token}}
+
+### 11. Completion er API entity 5 er teammate banabe.
+### Tader age test korte: Django admin -> Completion records -> Add
+###   occurrence: upore er occurrence, progress value: 1, completed at: Today + Now -> Save
+### Tarpor 6, 7, 4 abar chalao: total_points 30 (10 + daily bonus 20), "First Step" badge
+
+### ---------------- ENTITY 13: DEVICE_TOKEN ----------------
+
+### 12. Phone token register -> 201
+POST {{baseUrl}}/devices/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "push_token": "test-token-123", "platform": "ANDROID" }
+
+### 13. Same token abar -> 200 (duplicate hoy na)
+POST {{baseUrl}}/devices/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "push_token": "test-token-123", "platform": "ANDROID" }
+
+### 14. Bhul platform -> 400
+POST {{baseUrl}}/devices/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "push_token": "x", "platform": "NOKIA" }
+
+### 15. Amar device list
+GET {{baseUrl}}/devices/
+Authorization: Bearer {{token}}
+
+### 16. Logout e token muche fela -> 204
+POST {{baseUrl}}/devices/unregister/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "push_token": "test-token-123" }
+
+### 17. Login chara -> 401
+GET {{baseUrl}}/points/

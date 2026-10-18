@@ -46,6 +46,8 @@ INSTALLED_APPS = [
     # Local apps
     "apps.users",
     "apps.habits",
+    "apps.tracking",       # ER entity 5 (starter, owned by entity-5 teammate)
+    "apps.gamification",   # ER entities 10, 11, 12
 ]
 
 MIDDLEWARE = [
@@ -79,7 +81,8 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 
 # Database
-# SQLite for quick start; switch to PostgreSQL later via DATABASE_URL
+# PostgreSQL is required (HabitSchedule.weekdays uses ArrayField).
+# Set DATABASE_URL in .env, e.g. postgres://habit:habit@localhost:5432/habit_builder
 DATABASES = {
     "default": env.db(
         "DATABASE_URL",
@@ -163,3 +166,19 @@ HABIT_COMPLETION_POINTS = env.int("HABIT_COMPLETION_POINTS", default=10)
 HABIT_POINTS_PER_LEVEL = env.int("HABIT_POINTS_PER_LEVEL", default=100)
 # Configure as a dotted Python path to a provider adapter accepting (user, reminder).
 HABIT_REMINDER_SENDER = env("HABIT_REMINDER_SENDER", default="")
+
+# ============================================
+# Gamification (ER entities 10-12, FR-18)
+# ============================================
+# Point rules. Change numbers here without touching code.
+GAMIFICATION = {
+    "COMPLETION_POINTS": 10,
+    "DAILY_BONUS_POINTS": 20,
+    "STREAK_MILESTONES": {7: 50, 30: 150},
+    "BADGE_POINTS": 0,
+    "POINTS_PER_LEVEL": 100,
+}
+
+# Other teammates' models used by gamification (leave None until they exist)
+USER_REWARD_MODEL = env("USER_REWARD_MODEL", default=None)   # e.g. "rewards.UserReward"  (entity 9)
+STREAK_MODEL = env("STREAK_MODEL", default=None)             # e.g. "streaks.Streak"      (entity 7)

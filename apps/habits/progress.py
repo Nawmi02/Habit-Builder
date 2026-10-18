@@ -8,13 +8,13 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from .models import (
-    CompletionRecord,
     Habit,
     HabitOccurrence,
     Reminder,
     Streak,
     UserReward,
 )
+from apps.tracking.models import CompletionRecord
 
 
 def _is_positive_action(habit, *, action):
