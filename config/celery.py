@@ -19,4 +19,12 @@ app.conf.beat_schedule = {
         "task": "apps.habits.tasks.generate_upcoming_occurrences",
         "schedule": crontab(minute=0),  # hourly
     },
+    "send-due-habit-reminders": {
+        "task": "apps.habits.tasks.send_due_reminders",
+        "schedule": crontab(minute="*"),  # every minute
+    },
+    "mark-overdue-habit-occurrences": {
+        "task": "apps.habits.tasks.mark_overdue_occurrences_missed",
+        "schedule": crontab(minute=5),  # hourly, after local-day deadlines
+    },
 }

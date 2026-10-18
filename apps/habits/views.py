@@ -2,19 +2,29 @@ from collections import defaultdict
 from datetime import date
 from zoneinfo import ZoneInfo
 
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import viewsets
+from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from .models import Habit, HabitOccurrence
+from .models import CompletionRecord, Habit, HabitOccurrence, Reminder, SkipReason, Streak, UserReward
 from .serializers import (
     HabitSerializer,
     HabitOccurrenceSerializer,
     HabitOccurrenceDetailSerializer,
+    CompletionRecordSerializer,
+    CompletionInputSerializer,
+    SkipInputSerializer,
+    SkipReasonSerializer,
+    StreakSerializer,
+    ReminderSerializer,
+    UserRewardSerializer,
 )
 from .services import generate_occurrences, remove_future_pending
+from .progress import complete_occurrence, skip_occurrence
 
 
 class HabitViewSet(viewsets.ModelViewSet):
@@ -111,6 +121,12 @@ class HabitViewSet(viewsets.ModelViewSet):
         serializer = HabitOccurrenceSerializer(qs, many=True)
         return Response(serializer.data)
 
+    @action(detail=True, methods=["get"])
+    def streak(self, request, pk=None):
+        habit = self.get_object()
+        streak, _ = Streak.objects.get_or_create(habit=habit)
+        return Response(StreakSerializer(streak).data)
+
     @action(detail=False, methods=["get"])
     def checklist(self, request):
         """Today's checklist grouped by time_of_day."""
@@ -171,3 +187,84 @@ class HabitViewSet(viewsets.ModelViewSet):
                 "ANYTIME": serializer(groups.get("ANYTIME", []), many=True).data,
             },
         })
+
+
+class OccurrenceCompletionView(APIView):
+    """Record a completion or a skip for an occurrence owned by the caller."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk, action_name):
+        occurrence = get_object_or_404(HabitOccurrence, pk=pk, habit__user=request.user)
+        if action_name == "complete":
+            payload = CompletionInputSerializer(data=request.data)
+            payload.is_valid(raise_exception=True)
+            record, streak, reward = complete_occurrence(
+                occurrence_id=occurrence.pk, user=request.user, data=payload.validated_data
+            )
+            return Response(
+                {
+                    "completion": CompletionRecordSerializer(record).data,
+                    "streak": StreakSerializer(streak).data,
+                    "reward": UserRewardSerializer(reward).data,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
+        payload = SkipInputSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        record, streak, reward = skip_occurrence(
+            occurrence_id=occurrence.pk, user=request.user, data=payload.validated_data
+        )
+        return Response(
+            {
+                "completion": CompletionRecordSerializer(record).data,
+                "streak": StreakSerializer(streak).data,
+                "reward": UserRewardSerializer(reward).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class CompletionRecordViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    serializer_class = CompletionRecordSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return CompletionRecord.objects.filter(
+            occurrence__habit__user=self.request.user
+        ).select_related("occurrence", "skip_reason")
+
+
+class SkipReasonViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    serializer_class = SkipReasonSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = SkipReason.objects.filter(is_active=True)
+
+
+class ReminderViewSet(
+    mixins.ListModelMixin,
+    mixins.CreateModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
+):
+    serializer_class = ReminderSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Reminder.objects.filter(
+            occurrence__habit__user=self.request.user
+        ).select_related("occurrence", "occurrence__habit")
+
+    def perform_destroy(self, instance):
+        instance.status = Reminder.Status.CANCELLED
+        instance.delivery_status = "cancelled_by_user"
+        instance.save(update_fields=["status", "delivery_status"])
+
+
+class UserRewardView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        reward, _ = UserReward.objects.get_or_create(user=request.user)
+        return Response(UserRewardSerializer(reward).data)

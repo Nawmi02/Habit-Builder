@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 venv/
 .venv/
+.venv311/
 
 # Django
 *.sqlite3
@@ -34,7 +35,8 @@ htmlcov/
 *.log
 
 # Editor / OS
-.vscode/
+.vscode/*
+!.vscode/settings.json
 .idea/
 .DS_Store
 Thumbs.db

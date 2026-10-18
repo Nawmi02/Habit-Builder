@@ -1,6 +1,15 @@
 from rest_framework import serializers
 
-from .models import Habit, HabitSchedule, HabitOccurrence
+from .models import (
+    CompletionRecord,
+    Habit,
+    HabitOccurrence,
+    HabitSchedule,
+    Reminder,
+    SkipReason,
+    Streak,
+    UserReward,
+)
 
 
 class HabitScheduleSerializer(serializers.ModelSerializer):
@@ -67,6 +76,94 @@ class HabitOccurrenceDetailSerializer(serializers.ModelSerializer):
             "habit_type", "target_type", "target_value", "target_unit",
             "time_of_day", "scheduled_date", "deadline_at", "status",
         ]
+
+
+class CompletionRecordSerializer(serializers.ModelSerializer):
+    completion_id = serializers.IntegerField(source="pk", read_only=True)
+    occurrence_id = serializers.IntegerField(source="occurrence.pk", read_only=True)
+    skip_reason_id = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = CompletionRecord
+        fields = [
+            "completion_id", "occurrence_id", "progress_value", "completed_at",
+            "source", "note", "mood", "skip_reason_id", "synced_at",
+        ]
+        read_only_fields = ["completion_id", "occurrence_id", "synced_at"]
+
+
+class SkipReasonSerializer(serializers.ModelSerializer):
+    reason_id = serializers.IntegerField(source="pk", read_only=True)
+
+    class Meta:
+        model = SkipReason
+        fields = ["reason_id", "name", "description", "is_active"]
+        read_only_fields = fields
+
+
+class StreakSerializer(serializers.ModelSerializer):
+    streak_id = serializers.IntegerField(source="pk", read_only=True)
+    habit_id = serializers.IntegerField(source="habit.pk", read_only=True)
+
+    class Meta:
+        model = Streak
+        fields = [
+            "streak_id", "habit_id", "current_streak", "best_streak",
+            "last_completed_date", "last_skipped_date", "strength_score",
+            "freeze_count", "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class ReminderSerializer(serializers.ModelSerializer):
+    reminder_id = serializers.IntegerField(source="pk", read_only=True)
+    occurrence_id = serializers.PrimaryKeyRelatedField(
+        source="occurrence", queryset=HabitOccurrence.objects.all()
+    )
+
+    class Meta:
+        model = Reminder
+        fields = [
+            "reminder_id", "occurrence_id", "reminder_type", "escalation_level",
+            "scheduled_at", "status", "sent_at", "delivery_status",
+        ]
+        read_only_fields = ["reminder_id", "status", "sent_at", "delivery_status"]
+
+    def validate_occurrence_id(self, occurrence):
+        if occurrence.habit.user_id != self.context["request"].user.pk:
+            raise serializers.ValidationError("Occurrence does not belong to you.")
+        if occurrence.status != HabitOccurrence.Status.PENDING:
+            raise serializers.ValidationError("Reminders require a pending occurrence.")
+        return occurrence
+
+
+class UserRewardSerializer(serializers.ModelSerializer):
+    reward_id = serializers.IntegerField(source="pk", read_only=True)
+    user_id = serializers.IntegerField(source="user.pk", read_only=True)
+
+    class Meta:
+        model = UserReward
+        fields = ["reward_id", "user_id", "total_points", "level", "updated_at"]
+        read_only_fields = fields
+
+
+class CompletionInputSerializer(serializers.Serializer):
+    progress_value = serializers.IntegerField(min_value=0, required=False)
+    completed_at = serializers.DateTimeField(required=False)
+    source = serializers.ChoiceField(choices=CompletionRecord.Source.choices, required=False)
+    note = serializers.CharField(required=False, allow_blank=True)
+    mood = serializers.CharField(required=False, allow_blank=True, max_length=32)
+
+
+class SkipInputSerializer(serializers.Serializer):
+    skip_reason_id = serializers.PrimaryKeyRelatedField(
+        source="skip_reason",
+        queryset=SkipReason.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
+    source = serializers.ChoiceField(choices=CompletionRecord.Source.choices, required=False)
+    note = serializers.CharField(required=False, allow_blank=True)
 
 
 class HabitSerializer(serializers.ModelSerializer):

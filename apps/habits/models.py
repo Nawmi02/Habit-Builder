@@ -175,3 +175,137 @@ class HabitOccurrence(models.Model):
 
     def __str__(self):
         return f"{self.habit_id} {self.scheduled_date} {self.status}"
+
+
+class SkipReason(models.Model):
+    """A selectable reason for skipping a scheduled habit occurrence."""
+
+    name = models.CharField(max_length=80, unique=True)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = "skip_reason"
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class CompletionRecord(models.Model):
+    """The user's completion or skip response for one occurrence."""
+
+    class Source(models.TextChoices):
+        APP = "APP", "App"
+        REMINDER = "REMINDER", "Reminder"
+        SYNC = "SYNC", "Offline sync"
+
+    class Mood(models.TextChoices):
+        GREAT = "GREAT", "Great"
+        GOOD = "GOOD", "Good"
+        NEUTRAL = "NEUTRAL", "Neutral"
+        LOW = "LOW", "Low"
+        BAD = "BAD", "Bad"
+
+    occurrence = models.OneToOneField(
+        HabitOccurrence,
+        on_delete=models.CASCADE,
+        related_name="completion_record",
+    )
+    progress_value = models.PositiveIntegerField(default=1)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    source = models.CharField(max_length=10, choices=Source.choices, default=Source.APP)
+    note = models.TextField(blank=True)
+    mood = models.CharField(max_length=32, blank=True)
+    skip_reason = models.ForeignKey(
+        SkipReason,
+        on_delete=models.PROTECT,
+        related_name="completion_records",
+        null=True,
+        blank=True,
+    )
+    synced_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "completion_record"
+        indexes = [models.Index(fields=["completed_at"], name="completion_completed_idx")]
+
+    def __str__(self):
+        return f"Completion for occurrence {self.occurrence_id}"
+
+
+class Streak(models.Model):
+    """Current and best consistency data for a habit."""
+
+    habit = models.OneToOneField(Habit, on_delete=models.CASCADE, related_name="streak")
+    current_streak = models.PositiveIntegerField(default=0)
+    best_streak = models.PositiveIntegerField(default=0)
+    last_completed_date = models.DateField(null=True, blank=True)
+    last_skipped_date = models.DateField(null=True, blank=True)
+    strength_score = models.PositiveSmallIntegerField(default=0)
+    freeze_count = models.PositiveSmallIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "streak"
+        constraints = [
+            models.CheckConstraint(condition=models.Q(strength_score__lte=100), name="streak_strength_lte_100"),
+        ]
+
+    def __str__(self):
+        return f"Streak for habit {self.habit_id}: {self.current_streak}"
+
+
+class Reminder(models.Model):
+    """A scheduled local or push reminder for a habit occurrence."""
+
+    class Type(models.TextChoices):
+        LOCAL = "LOCAL", "Local"
+        PUSH = "PUSH", "Push"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        SENT = "SENT", "Sent"
+        CANCELLED = "CANCELLED", "Cancelled"
+        FAILED = "FAILED", "Failed"
+
+    occurrence = models.ForeignKey(
+        HabitOccurrence, on_delete=models.CASCADE, related_name="reminders"
+    )
+    reminder_type = models.CharField(max_length=5, choices=Type.choices, default=Type.PUSH)
+    escalation_level = models.PositiveSmallIntegerField(default=1)
+    scheduled_at = models.DateTimeField()
+    status = models.CharField(max_length=9, choices=Status.choices, default=Status.PENDING)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    delivery_status = models.CharField(max_length=30, blank=True)
+
+    class Meta:
+        db_table = "reminder"
+        ordering = ["scheduled_at"]
+        indexes = [models.Index(fields=["status", "scheduled_at"], name="reminder_status_sched_idx")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["occurrence", "reminder_type", "scheduled_at"],
+                name="uniq_reminder_occurrence_time",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.reminder_type} reminder for occurrence {self.occurrence_id}"
+
+
+class UserReward(models.Model):
+    """Aggregate points and level earned by a user."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="reward"
+    )
+    total_points = models.PositiveIntegerField(default=0)
+    level = models.PositiveIntegerField(default=1)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "user_reward"
+
+    def __str__(self):
+        return f"Rewards for user {self.user_id}: {self.total_points} points"

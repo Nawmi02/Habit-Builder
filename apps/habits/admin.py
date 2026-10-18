@@ -1,6 +1,15 @@
 from django.contrib import admin
 
-from .models import Habit, HabitSchedule, HabitOccurrence
+from .models import (
+    CompletionRecord,
+    Habit,
+    HabitOccurrence,
+    HabitSchedule,
+    Reminder,
+    SkipReason,
+    Streak,
+    UserReward,
+)
 
 
 class HabitScheduleInline(admin.StackedInline):
@@ -31,3 +40,36 @@ class HabitOccurrenceAdmin(admin.ModelAdmin):
     list_filter = ("status", "scheduled_date")
     search_fields = ("habit__name", "habit__user__email")
     date_hierarchy = "scheduled_date"
+
+
+@admin.register(CompletionRecord)
+class CompletionRecordAdmin(admin.ModelAdmin):
+    list_display = ("id", "occurrence", "completed_at", "source", "skip_reason")
+    list_filter = ("source", "mood")
+    search_fields = ("occurrence__habit__name", "note")
+
+
+@admin.register(SkipReason)
+class SkipReasonAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("name", "description")
+
+
+@admin.register(Streak)
+class StreakAdmin(admin.ModelAdmin):
+    list_display = ("id", "habit", "current_streak", "best_streak", "strength_score")
+    search_fields = ("habit__name", "habit__user__email")
+
+
+@admin.register(Reminder)
+class ReminderAdmin(admin.ModelAdmin):
+    list_display = ("id", "occurrence", "reminder_type", "scheduled_at", "status")
+    list_filter = ("reminder_type", "status", "delivery_status")
+    search_fields = ("occurrence__habit__name", "occurrence__habit__user__email")
+
+
+@admin.register(UserReward)
+class UserRewardAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "total_points", "level", "updated_at")
+    search_fields = ("user__email", "user__name")

@@ -14,7 +14,7 @@ from datetime import date, timedelta
 
 from django.utils import timezone
 
-from .models import Habit, HabitOccurrence, HabitSchedule
+from .models import Habit, HabitOccurrence, HabitSchedule, Reminder
 
 HORIZON_DAYS = 7
 
@@ -122,6 +122,41 @@ def generate_occurrences(habit: Habit, days: int = HORIZON_DAYS) -> int:
 
     # ignore_conflicts uses the unique constraint (habit, scheduled_date)
     created = HabitOccurrence.objects.bulk_create(rows, ignore_conflicts=True)
+
+    # Materialize each schedule reminder for the generated occurrences. The unique
+    # constraint makes this safe when the hourly occurrence task runs repeatedly.
+    if schedule.reminder_time:
+        from datetime import datetime
+
+        from zoneinfo import ZoneInfo
+
+        try:
+            user_tz = ZoneInfo(user.time_zone)
+        except Exception:
+            user_tz = ZoneInfo("UTC")
+        dates = {row.scheduled_date for row in rows}
+        occurrences = HabitOccurrence.objects.filter(
+            habit=habit, scheduled_date__in=dates
+        )
+        now = timezone.now()
+        reminders = [
+            Reminder(
+                occurrence=occurrence,
+                reminder_type=Reminder.Type.PUSH,
+                scheduled_at=scheduled_at,
+            )
+            for occurrence in occurrences
+            for scheduled_at in [
+                datetime.combine(
+                    occurrence.scheduled_date,
+                    schedule.reminder_time,
+                    tzinfo=user_tz,
+                ).astimezone(ZoneInfo("UTC"))
+            ]
+            if scheduled_at > now
+        ]
+        Reminder.objects.bulk_create(reminders, ignore_conflicts=True)
+
     return len(created)
 
 

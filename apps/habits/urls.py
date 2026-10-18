@@ -1,8 +1,24 @@
+from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from .views import HabitViewSet
+from .views import (
+    CompletionRecordViewSet,
+    HabitViewSet,
+    OccurrenceCompletionView,
+    ReminderViewSet,
+    SkipReasonViewSet,
+    UserRewardView,
+)
 
 router = DefaultRouter()
 router.register("habits", HabitViewSet, basename="habit")
+router.register("completions", CompletionRecordViewSet, basename="completion")
+router.register("skip-reasons", SkipReasonViewSet, basename="skip-reason")
+router.register("reminders", ReminderViewSet, basename="reminder")
 
-urlpatterns = router.urls
+urlpatterns = [
+    path("occurrences/<int:pk>/complete/", OccurrenceCompletionView.as_view(), {"action_name": "complete"}),
+    path("occurrences/<int:pk>/skip/", OccurrenceCompletionView.as_view(), {"action_name": "skip"}),
+    path("rewards/me/", UserRewardView.as_view(), name="my-reward"),
+    path("", include(router.urls)),
+]

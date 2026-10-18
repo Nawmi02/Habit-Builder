@@ -157,3 +157,9 @@ CELERY_RESULT_BACKEND = env("REDIS_URL", default="redis://localhost:6379/0")
 CELERY_TIMEZONE = "UTC"
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 min
+
+# Reward tuning (can be overridden in environment-specific settings).
+HABIT_COMPLETION_POINTS = env.int("HABIT_COMPLETION_POINTS", default=10)
+HABIT_POINTS_PER_LEVEL = env.int("HABIT_POINTS_PER_LEVEL", default=100)
+# Configure as a dotted Python path to a provider adapter accepting (user, reminder).
+HABIT_REMINDER_SENDER = env("HABIT_REMINDER_SENDER", default="")
