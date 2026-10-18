@@ -36,8 +36,14 @@ class RegisterSerializer(serializers.ModelSerializer):
 class DeviceTokenSerializer(serializers.ModelSerializer):
     device_id = serializers.IntegerField(source="pk", read_only=True)
     user_id = serializers.IntegerField(source="user.pk", read_only=True)
+    # Declared by hand so DRF does not add a UniqueValidator: the same phone
+    # must be able to register its token again (the view updates the row).
+    push_token = serializers.CharField(max_length=255)
 
     class Meta:
         model = DeviceToken
         fields = ["device_id", "user_id", "push_token", "platform", "last_active"]
         read_only_fields = ["device_id", "user_id", "last_active"]
+
+class DeviceTokenUnregisterSerializer(serializers.Serializer):
+    push_token = serializers.CharField(max_length=255)
