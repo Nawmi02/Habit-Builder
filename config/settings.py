@@ -40,13 +40,14 @@ INSTALLED_APPS = [
     # Third party
     "rest_framework",
     "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",   # logout: refresh tokens can be revoked
     "drf_spectacular",
     "corsheaders",
     "django_celery_beat", 
     # Local apps
     "apps.users",
     "apps.habits",
-    "apps.tracking",       # ER entity 5 (starter, owned by entity-5 teammate)
+    "apps.tracking",       # ER entity 5 (proxy of habits.CompletionRecord)
     "apps.gamification",   # ER entities 10, 11, 12
 ]
 
@@ -161,7 +162,8 @@ CELERY_TIMEZONE = "UTC"
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 min
 
-# Reward tuning (can be overridden in environment-specific settings).
+# Reward tuning (can be overridden in .env). These feed GAMIFICATION below,
+# so there is one source of truth for points.
 HABIT_COMPLETION_POINTS = env.int("HABIT_COMPLETION_POINTS", default=10)
 HABIT_POINTS_PER_LEVEL = env.int("HABIT_POINTS_PER_LEVEL", default=100)
 # Configure as a dotted Python path to a provider adapter accepting (user, reminder).
@@ -172,13 +174,14 @@ HABIT_REMINDER_SENDER = env("HABIT_REMINDER_SENDER", default="")
 # ============================================
 # Point rules. Change numbers here without touching code.
 GAMIFICATION = {
-    "COMPLETION_POINTS": 10,
+    "COMPLETION_POINTS": HABIT_COMPLETION_POINTS,
     "DAILY_BONUS_POINTS": 20,
     "STREAK_MILESTONES": {7: 50, 30: 150},
     "BADGE_POINTS": 0,
-    "POINTS_PER_LEVEL": 100,
+    "POINTS_PER_LEVEL": HABIT_POINTS_PER_LEVEL,
 }
 
-# Other teammates' models used by gamification (leave None until they exist)
-USER_REWARD_MODEL = env("USER_REWARD_MODEL", default=None)   # e.g. "rewards.UserReward"  (entity 9)
-STREAK_MODEL = env("STREAK_MODEL", default=None)             # e.g. "streaks.Streak"      (entity 7)
+# Models of entity 7 and 9 used by gamification. USER_REWARD (entity 9) is kept
+# equal to the sum of POINT_TRANSACTION rows, so there is one point total.
+USER_REWARD_MODEL = env("USER_REWARD_MODEL", default="habits.UserReward")
+STREAK_MODEL = env("STREAK_MODEL", default="habits.Streak")

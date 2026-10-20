@@ -26,8 +26,10 @@ def make_user(email="a@x.com"):
     return User.objects.create_user(email=email, password="pass12345", name="A")
 
 
-def make_habit(user, name="Read", freq="DAILY"):
-    habit = Habit.objects.create(user=user, name=name, start_date=date.today())
+def make_habit(user, name="Read", freq="DAILY", habit_type="GOOD"):
+    habit = Habit.objects.create(
+        user=user, name=name, start_date=date.today(), habit_type=habit_type
+    )
     HabitSchedule.objects.create(habit=habit, frequency_type=freq)
     return habit
 
@@ -128,6 +130,66 @@ class PointRulesTests(TestCase):
     def test_rules_come_from_settings(self):
         record = complete(make_occurrence(self.read))
         self.assertEqual(record.point_transaction.points, 25)
+
+
+def skip(occurrence, reason=None):
+    """What the entity-5 code does on skip: save a record without completed_at, then mark SKIPPED."""
+    record = CompletionRecord.objects.create(occurrence=occurrence, progress_value=0, skip_reason=reason)
+    occurrence.status = HabitOccurrence.Status.SKIPPED
+    occurrence.save(update_fields=["status"])
+    return record
+
+
+class SkipAndBadHabitTests(TestCase):
+    """Rules added when entity 5 (complete / skip) was connected."""
+
+    def setUp(self):
+        self.user = make_user()
+
+    def test_complete_then_skip_still_gives_daily_bonus(self):
+        read, water = make_habit(self.user, "Read"), make_habit(self.user, "Water")
+        read_today, water_today = make_occurrence(read), make_occurrence(water)
+        complete(read_today)
+        self.assertFalse(PointTransaction.objects.filter(related_type=RT.DAILY_BONUS).exists())
+
+        skip(water_today)                                   # skipped with a reason
+        self.assertTrue(PointTransaction.objects.filter(related_type=RT.DAILY_BONUS).exists())
+        self.assertEqual(services.total_points(self.user), 10 + 20)
+
+    def test_only_skips_give_no_daily_bonus(self):
+        skip(make_occurrence(make_habit(self.user, "Read")))
+        self.assertEqual(services.total_points(self.user), 0)
+
+    def test_skipping_weekly_habit_keeps_daily_bonus(self):
+        complete(make_occurrence(make_habit(self.user, "Read")))
+        self.assertEqual(services.total_points(self.user), 30)
+
+        gym = make_habit(self.user, "Gym", freq="TIMES_PER_WEEK")
+        skip(make_occurrence(gym))
+        self.assertEqual(services.total_points(self.user), 30)
+
+    def test_bad_habit_slip_gives_no_points(self):
+        smoke = make_habit(self.user, "Smoke", habit_type="BAD")
+        complete(make_occurrence(smoke))                    # "complete" a bad habit = slipped
+        self.assertEqual(services.total_points(self.user), 0)
+        self.assertFalse(UserBadge.objects.filter(user=self.user).exists())
+
+    def test_bad_habit_avoided_gives_points_and_counts_as_checkin(self):
+        smoke = make_habit(self.user, "Smoke", habit_type="BAD")
+        skip(make_occurrence(smoke))                        # avoided
+        row = PointTransaction.objects.get(user=self.user, related_type=RT.COMPLETION)
+        self.assertEqual(row.points, 10)
+        self.assertEqual(row.reason, "Avoided Smoke")
+        self.assertTrue(UserBadge.objects.filter(user=self.user, badge__code="first-checkin").exists())
+
+    def test_user_reward_equals_point_total(self):
+        from apps.habits.models import UserReward
+
+        complete(make_occurrence(make_habit(self.user, "Read")))
+        complete(make_occurrence(make_habit(self.user, "Water")))
+        reward = UserReward.objects.get(user=self.user)
+        self.assertEqual(reward.total_points, services.total_points(self.user))
+        self.assertEqual(reward.total_points, 10 + 10 + 20)
 
 
 class BadgeTests(TestCase):

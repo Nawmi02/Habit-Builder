@@ -7,7 +7,8 @@ for the next HORIZON_DAYS (default 7).
 According to ER:
 - Daily habit → 1 occurrence per day
 - Weekdays habit → 1 occurrence on selected weekdays
-- Times-per-week habit → N occurrences per week (slot 1..N)
+- Times-per-week habit → N occurrences per week, one per day from Monday
+  (or the start date), each due by Sunday
 """
 
 from datetime import date, timedelta
@@ -21,7 +22,6 @@ HORIZON_DAYS = 7
 
 def _user_today(user) -> date:
     """Return today's date in the user's timezone."""
-    tz = timezone.pytz.timezone(user.time_zone) if hasattr(timezone, "pytz") else None
     try:
         from zoneinfo import ZoneInfo
 
@@ -99,20 +99,26 @@ def generate_occurrences(habit: Habit, days: int = HORIZON_DAYS) -> int:
                 )
 
         elif schedule.frequency_type == HabitSchedule.FrequencyType.TIMES_PER_WEEK:
-            # monday of the week
+            # N occurrences per week. Each one gets its own day (the table allows
+            # one occurrence per habit per day), starting on Monday or on the
+            # habit's start date, and all of them can be done until Sunday.
             monday = day - timedelta(days=day.weekday())
             if monday in weeks_seen:
                 continue
             weeks_seen.add(monday)
 
             sunday = monday + timedelta(days=6)
+            first_day = max(monday, habit.start_date)
             n = schedule.times_per_week or 1
 
-            for slot in range(1, n + 1):
+            for slot in range(n):
+                slot_day = first_day + timedelta(days=slot)
+                if slot_day > sunday:
+                    break          # habit started late in the week: fewer slots left
                 rows.append(
                     HabitOccurrence(
                         habit=habit,
-                        scheduled_date=monday,
+                        scheduled_date=slot_day,
                         deadline_at=_end_of_local_day(user, sunday),
                     )
                 )

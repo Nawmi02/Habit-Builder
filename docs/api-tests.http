@@ -5,6 +5,7 @@
 
 @baseUrl = http://127.0.0.1:8000/api
 @token = {{login.response.body.access}}
+@occ = {{checklist.response.body.$.groups.MORNING[0].occurrence_id}}
 
 ### 1. Register (ekbar-i; abar chalale "email already exists" ashbe, tokhon 2 no chalao)
 POST {{baseUrl}}/auth/register/
@@ -77,14 +78,30 @@ Content-Type: application/json
   "schedule": { "frequency_type": "DAILY" }
 }
 
-### 10. Ajker checklist -> occurrence_id dekho (completion banate lagbe)
+### 10. Ajker checklist -> "Read" er occurrence_id niche nije nije use hobe
+# @name checklist
 GET {{baseUrl}}/habits/checklist/
 Authorization: Bearer {{token}}
 
-### 11. Completion er API entity 5 er teammate banabe.
-### Tader age test korte: Django admin -> Completion records -> Add
-###   occurrence: upore er occurrence, progress value: 1, completed at: Today + Now -> Save
-### Tarpor 6, 7, 4 abar chalao: total_points 30 (10 + daily bonus 20), "First Step" badge
+### 11a. Habit complete (entity 5) -> 201. Tarpor 6, 7, 4 abar chalao:
+###      total_points 30 (10 + daily bonus 20), "First Step" badge
+POST {{baseUrl}}/occurrences/{{occ}}/complete/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "progress_value": 1, "mood": "GOOD" }
+
+### 11b. Amar reward (entity 9) -> total_points 6 er summary er sathe ek
+GET {{baseUrl}}/rewards/me/
+Authorization: Bearer {{token}}
+
+### 11c. Undo (FR-08) -> 200, status PENDING. Tarpor 6 abar: total_points 0
+POST {{baseUrl}}/occurrences/{{occ}}/undo/
+Authorization: Bearer {{token}}
+
+### 11d. Skip reason list (skip korte lagbe)
+GET {{baseUrl}}/skip-reasons/
+Authorization: Bearer {{token}}
 
 ### ---------------- ENTITY 13: DEVICE_TOKEN ----------------
 
@@ -122,3 +139,9 @@ Content-Type: application/json
 
 ### 17. Login chara -> 401
 GET {{baseUrl}}/points/
+
+### 18. Logout -> 200. Tarpor 2 (Login) er "refresh" ar kaj korbe na
+POST {{baseUrl}}/auth/logout/
+Content-Type: application/json
+
+{ "refresh": "{{login.response.body.refresh}}" }

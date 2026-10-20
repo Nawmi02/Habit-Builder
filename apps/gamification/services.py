@@ -5,7 +5,7 @@ Views never change points directly; everything goes through these functions,
 so the API, signals and other teammates' code all follow the same rules.
 
 Who calls what:
-- Completion saved / deleted ........ signals.py calls on_habit_completed / on_completion_undone
+- Completion saved / deleted ........ signals.py calls on_completion_saved / on_completion_undone
 - STREAK teammate (entity 7) ........ on_streak_updated(habit, current_streak, day)
 - REMINDER teammate (entity 8) ...... uses the `new_badges` list to send "badge unlocked" pushes
 """
@@ -13,7 +13,7 @@ Who calls what:
 from django.apps import apps
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import Max, Sum
+from django.db.models import Max, Q, Sum
 
 from .models import Badge, PointTransaction, UserBadge
 
@@ -129,8 +129,24 @@ def _give_bonus(user, related_type, points, reason):
         return None   # already given earlier
 
 
-def award_daily_bonus_if_earned(user, day, just_completed_id=None):
-    """Bonus when every daily/weekday habit scheduled on `day` is done (skips allowed)."""
+def _positive_q():
+    """An occurrence handled the good way: a good habit done, or a bad habit avoided."""
+    return Q(habit__habit_type="GOOD", status="COMPLETED") | Q(habit__habit_type="BAD", status="SKIPPED")
+
+
+def _resolved_q():
+    """An occurrence that no longer blocks the daily bonus (positive, or a good habit skipped)."""
+    return _positive_q() | Q(habit__habit_type="GOOD", status="SKIPPED")
+
+
+def award_daily_bonus_if_earned(user, day, just_completed_id=None, just_completed_positive=True):
+    """
+    Bonus when every daily/weekday habit scheduled on `day` is resolved and at
+    least one of them was handled the good way.
+
+    `just_completed_id` is the occurrence being completed or skipped right now;
+    its new status is saved a moment later, so it is passed in instead of read.
+    """
     Habit = apps.get_model("habits", "Habit")
     HabitOccurrence = apps.get_model("habits", "HabitOccurrence")
 
@@ -140,16 +156,14 @@ def award_daily_bonus_if_earned(user, day, just_completed_id=None):
         habit__schedule__frequency_type__in=["DAILY", "WEEKDAYS"],
         scheduled_date=day,
     )
+    has_positive = False
     if just_completed_id:
-        # the occurrence being completed right now counts as done,
-        # even if its status is saved a moment later
         todays = todays.exclude(pk=just_completed_id)
-        has_completed = True
-    else:
-        has_completed = todays.filter(status="COMPLETED").exists()
+        has_positive = bool(just_completed_positive)
+    has_positive = has_positive or todays.filter(_positive_q()).exists()
 
-    not_done = todays.exclude(status__in=["COMPLETED", "SKIPPED"]).exists()
-    if not_done or not has_completed:
+    not_done = todays.exclude(_resolved_q()).exists()
+    if not_done or not has_positive:
         return None
     return _give_bonus(user, RT.DAILY_BONUS, cfg("DAILY_BONUS_POINTS"), _daily_bonus_reason(day))
 
@@ -170,11 +184,16 @@ def check_badges(user, current_streak=None) -> list:
     return new_badges
 
 
+def _is_day_based(habit) -> bool:
+    schedule = getattr(habit, "schedule", None)
+    return schedule is not None and schedule.frequency_type in ("DAILY", "WEEKDAYS")
+
+
 @transaction.atomic
 def on_habit_completed(completion, current_streak=None) -> dict:
     """
-    Call after a habit occurrence is completed (signals.py does it for you).
-    Safe to call more than once for the same completion: points are given once.
+    Give points for a positive action on one occurrence: a good habit completed,
+    or a bad habit avoided. Safe to call more than once: points are given once.
     """
     occurrence = completion.occurrence
     habit = occurrence.habit
@@ -187,13 +206,12 @@ def on_habit_completed(completion, current_streak=None) -> dict:
             "user": user,
             "related_type": RT.COMPLETION,
             "points": cfg("COMPLETION_POINTS"),
-            "reason": f"Completed {habit.name}"[:255],
+            "reason": (f"Avoided {habit.name}" if habit.habit_type == "BAD" else f"Completed {habit.name}")[:255],
         },
     )
-    # daily bonus only for day-based habits; a "3 times a week" occurrence is
-    # dated on Monday and must not trigger Monday's bonus
-    schedule = getattr(habit, "schedule", None)
-    if schedule is not None and schedule.frequency_type in ("DAILY", "WEEKDAYS"):
+    # daily bonus only for day-based habits; a "3 times a week" occurrence must
+    # not trigger a day's bonus
+    if _is_day_based(habit):
         award_daily_bonus_if_earned(user, occurrence.scheduled_date, just_completed_id=occurrence.pk)
     new_badges = check_badges(user, current_streak)
     _sync_user_reward(user)
@@ -203,6 +221,45 @@ def on_habit_completed(completion, current_streak=None) -> dict:
         "new_badges": new_badges,
         **progress_summary(user),
     }
+
+
+@transaction.atomic
+def on_good_habit_skipped(occurrence) -> None:
+    """
+    A good habit was skipped (with a reason). It earns no points, but it no longer
+    blocks the daily bonus, so check the bonus again.
+    """
+    if _is_day_based(occurrence.habit):
+        award_daily_bonus_if_earned(
+            occurrence.habit.user,
+            occurrence.scheduled_date,
+            just_completed_id=occurrence.pk,
+            just_completed_positive=False,
+        )
+        _sync_user_reward(occurrence.habit.user)
+
+
+def on_completion_saved(record) -> None:
+    """
+    Decide what a saved COMPLETION_RECORD means and apply the point rules.
+
+    | habit | completed_at | meaning                         |
+    | GOOD  | set          | done -> +points                 |
+    | GOOD  | empty        | skipped, or completion cleared  |
+    | BAD   | empty        | avoided (a skip) -> +points     |
+    | BAD   | set          | slipped -> no points            |
+    """
+    occurrence = record.occurrence
+    is_bad = occurrence.habit.habit_type == "BAD"
+    positive = (record.completed_at is None) if is_bad else (record.completed_at is not None)
+    had_points = PointTransaction.objects.filter(completion_id=record.pk).exists()
+
+    if positive:
+        on_habit_completed(record)
+    elif had_points:
+        on_completion_undone(occurrence)      # an earlier positive result was changed
+    elif not is_bad:
+        on_good_habit_skipped(occurrence)
 
 
 @transaction.atomic

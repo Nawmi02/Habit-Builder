@@ -24,7 +24,7 @@ from .serializers import (
     UserRewardSerializer,
 )
 from .services import generate_occurrences, remove_future_pending
-from .progress import complete_occurrence, skip_occurrence
+from .progress import complete_occurrence, skip_occurrence, undo_occurrence
 
 
 class HabitViewSet(viewsets.ModelViewSet):
@@ -196,6 +196,17 @@ class OccurrenceCompletionView(APIView):
 
     def post(self, request, pk, action_name):
         occurrence = get_object_or_404(HabitOccurrence, pk=pk, habit__user=request.user)
+        if action_name == "undo":
+            occurrence, streak, reward = undo_occurrence(
+                occurrence_id=occurrence.pk, user=request.user
+            )
+            return Response(
+                {
+                    "occurrence": HabitOccurrenceSerializer(occurrence).data,
+                    "streak": StreakSerializer(streak).data,
+                    "reward": UserRewardSerializer(reward).data,
+                }
+            )
         if action_name == "complete":
             payload = CompletionInputSerializer(data=request.data)
             payload.is_valid(raise_exception=True)
