@@ -172,7 +172,12 @@ export default function WelcomeScreen() {
       edges={['top', 'bottom']}
     >
       {/* Illustration area */}
-      <View style={styles.illustrationPanel}>
+      <View
+        style={[
+          styles.illustrationPanel,
+          { height: Math.min(Math.max(height * 0.43, 220), 420) },
+        ]}
+      >
         <Pressable
           onPress={() => void skipOnboarding()}
           style={styles.skipButton}
@@ -286,7 +291,7 @@ export default function WelcomeScreen() {
             accessibilityRole="button"
           >
             <Text style={styles.primaryButtonText}>
-              {isLastSlide ? 'Get started' : 'Next'}
+              {isLastSlide ? 'Get started' : 'Continue'}
             </Text>
             <Text style={styles.buttonArrow}>›</Text>
           </Pressable>
@@ -334,9 +339,6 @@ const styles = StyleSheet.create({
   },
 
   illustrationPanel: {
-    height: '48%',
-    minHeight: 300,
-    maxHeight: 460,
     backgroundColor: COLORS.purpleLight,
     position: 'relative',
     overflow: 'hidden',

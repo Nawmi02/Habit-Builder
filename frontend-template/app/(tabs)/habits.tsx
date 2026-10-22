@@ -3,7 +3,9 @@ import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -20,6 +22,8 @@ import { Button } from '../../src/components/Button';
 import { useTheme } from '../../src/theme/ThemeProvider';
 import { radius, SCREEN_PADDING } from '../../src/theme/tokens';
 import { toDateString } from '../../src/lib/dates';
+import { useAuth } from '../../src/features/auth/AuthProvider';
+import { syncReminders } from '../../src/notifications/syncReminders';
 
 const EMOJIS = ['💧', '🏃', '📖', '🧘', '🏋️', '🥗', '😴', '✍️', '🎯', '🚭', '🧠', '🚶', '🧹', '💊', '📵', '🎸', '🌱', '☀️', '🦷', '🍎'];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -74,6 +78,7 @@ function HabitRow({ habit, onOpen, onToggle, onDelete }: { habit: Habit; onOpen:
 
 export default function Habits() {
   const { colors } = useTheme();
+  const { user } = useAuth();
   const qc = useQueryClient();
   const habitsQuery = useQuery({ queryKey: ['habits'], queryFn: () => api.habits.list() });
   const [editorOpen, setEditorOpen] = useState(false);
@@ -103,9 +108,16 @@ export default function Habits() {
     onSuccess: (updated, habit) => {
       if (selected?.habit_id === habit.habit_id) setSelected(updated);
       void refresh();
+      if (user) void syncReminders(user).catch(() => {});
     },
   });
-  const removeHabit = useMutation({ mutationFn: (id: number) => api.habits.remove(id), onSuccess: refresh });
+  const removeHabit = useMutation({
+    mutationFn: (id: number) => api.habits.remove(id),
+    onSuccess: () => {
+      void refresh();
+      if (user) void syncReminders(user).catch(() => {});
+    },
+  });
 
   function askDelete(habit: Habit) {
     Alert.alert('Delete habit?', `“${habit.name}” will be removed from your habits.`, [
@@ -144,6 +156,7 @@ export default function Habits() {
       const payload = draftToHabitWrite({ ...draft, name: draft.name.trim() }, startDate);
       if (editing) await api.habits.update(editing.habit_id, payload);
       else await api.habits.create(payload);
+      if (user) void syncReminders(user).catch(() => {});
       await refresh(); setEditorOpen(false); setEditing(null);
     } catch (e) { setFormError(describeError(e)); }
     finally { setSaving(false); }
@@ -183,10 +196,18 @@ export default function Habits() {
 
       {DetailModal}
       <Modal visible={editorOpen} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => setEditorOpen(false)}>
-        <SafeAreaView style={[styles.screen, { backgroundColor: colors.bg }]}>
+        <SafeAreaView style={[styles.screen, { backgroundColor: colors.bg }]} edges={['top', 'bottom']}>
           <Header title={editing ? 'Edit habit' : 'Create a habit'} subtitle={`Step ${editorStep} of 3`} onBack={() => editorStep === 1 ? setEditorOpen(false) : setEditorStep((editorStep - 1) as 1 | 2 | 3)} action={<Pressable onPress={() => setEditorOpen(false)} hitSlop={12}><Text style={{ color: colors.muted, fontSize: 23 }}>×</Text></Pressable>} />
           <View style={[styles.progressTrack, { backgroundColor: colors.primaryTint }]}><View style={[styles.progressFill, { backgroundColor: colors.primary, width: `${(editorStep / 3) * 100}%` }]} /></View>
-          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.editorContent}>
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          >
+          <ScrollView
+            style={{ flex: 1, minHeight: 0 }}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={[styles.editorContent, { paddingBottom: 104 }]}
+          >
             {editorStep === 1 ? <>
               <Text style={[styles.editorTitle, { color: colors.ink }]}>What habit do you want to build?</Text><Text style={[styles.editorSub, { color: colors.muted }]}>Give it a name and make it feel like yours.</Text>
               <Text style={[styles.fieldLabel, { color: colors.ink }]}>Habit name</Text>
@@ -214,6 +235,7 @@ export default function Habits() {
             {formError ? <Text style={{ color: colors.danger, marginTop: 16 }}>{formError}</Text> : null}
           </ScrollView>
           <View style={[styles.editorFooter, { backgroundColor: colors.card, borderTopColor: colors.border }]}><Button label={editorStep === 3 ? (editing ? 'Save changes' : 'Create habit') : 'Continue'} onPress={() => editorStep < 3 ? advanceEditor() : void saveHabit()} loading={saving} style={{ flex: 1 }} /></View>
+          </KeyboardAvoidingView>
         </SafeAreaView>
       </Modal>
     </SafeAreaView>
@@ -283,7 +305,7 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 16, fontWeight: '800' },
   progressTrack: { height: 5, marginHorizontal: SCREEN_PADDING, borderRadius: 3, overflow: 'hidden', marginTop: 15 },
   progressFill: { height: 5, borderRadius: 3 },
-  editorContent: { padding: SCREEN_PADDING, paddingTop: 22, paddingBottom: 28 },
+  editorContent: { flexGrow: 1, padding: SCREEN_PADDING, paddingTop: 22, paddingBottom: 28 },
   editorTitle: { fontSize: 23, fontWeight: '800', letterSpacing: -0.4 },
   editorSub: { fontSize: 14, lineHeight: 21, marginTop: 8, marginBottom: 25 },
   fieldLabel: { fontSize: 13, fontWeight: '700', marginBottom: 9 },
@@ -298,7 +320,7 @@ const styles = StyleSheet.create({
   stepperButton: { width: 34, height: 34, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   reminderCard: { flexDirection: 'row', alignItems: 'center', padding: 16, borderRadius: 14, borderWidth: 1 },
   reviewCard: { flexDirection: 'row', alignItems: 'center', gap: 13, padding: 16, borderRadius: 15, marginTop: 28 },
-  editorFooter: { paddingHorizontal: SCREEN_PADDING, paddingTop: 13, paddingBottom: 12, borderTopWidth: StyleSheet.hairlineWidth },
+  editorFooter: { position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 2, elevation: 8, paddingHorizontal: SCREEN_PADDING, paddingTop: 13, paddingBottom: 12, borderTopWidth: StyleSheet.hairlineWidth },
   detailContent: { padding: SCREEN_PADDING, paddingBottom: 40 },
   detailHero: { alignItems: 'center', borderWidth: 1, borderRadius: 20, padding: 24, marginBottom: 14 },
   detailEmoji: { width: 86, height: 86, borderRadius: 25, alignItems: 'center', justifyContent: 'center', marginBottom: 14 },

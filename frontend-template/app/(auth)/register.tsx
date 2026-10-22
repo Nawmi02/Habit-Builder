@@ -25,6 +25,9 @@ export default function Register() {
     if (!name.trim()) local.name = 'Enter your name.';
     if (!email.trim()) local.email = 'Enter your email.';
     if (password.length < 8) local.password = 'Use at least 8 characters.';
+    else if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+      local.password = 'Use at least one letter and one number.';
+    }
     setFieldErrors(local);
     setError(null);
     if (Object.keys(local).length) return;
@@ -61,7 +64,10 @@ export default function Register() {
 
           <Field label="Display name" value={name} onChangeText={setName} textContentType="name" placeholder="Alex Johnson" error={fieldErrors.name} />
           <Field label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" textContentType="emailAddress" placeholder="you@example.com" error={fieldErrors.email} />
-          <Field label="Password" value={password} onChangeText={setPassword} password autoCapitalize="none" textContentType="newPassword" placeholder="At least 8 characters" error={fieldErrors.password} />
+          <Field label="Password" value={password} onChangeText={setPassword} password autoCapitalize="none" textContentType="newPassword" placeholder="At least 8 characters, with a letter and number" error={fieldErrors.password} />
+          <Text style={{ color: colors.muted, fontSize: 12, marginTop: -10, marginBottom: 16 }}>
+            At least 8 characters, including one letter and one number.
+          </Text>
           {error ? <Text style={{ color: colors.danger, marginBottom: 12 }}>{error}</Text> : null}
 
           <Button label="Create account" onPress={submit} loading={busy} />

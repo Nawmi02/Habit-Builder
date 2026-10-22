@@ -17,6 +17,7 @@ router.register("skip-reasons", SkipReasonViewSet, basename="skip-reason")
 router.register("reminders", ReminderViewSet, basename="reminder")
 
 urlpatterns = [
+    path("occurrences/<int:pk>/start/", OccurrenceCompletionView.as_view(), {"action_name": "start"}),
     path("occurrences/<int:pk>/complete/", OccurrenceCompletionView.as_view(), {"action_name": "complete"}),
     path("occurrences/<int:pk>/skip/", OccurrenceCompletionView.as_view(), {"action_name": "skip"}),
     path("occurrences/<int:pk>/undo/", OccurrenceCompletionView.as_view(), {"action_name": "undo"}),

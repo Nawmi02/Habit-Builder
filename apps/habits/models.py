@@ -156,6 +156,7 @@ class HabitOccurrence(models.Model):
     )
     scheduled_date = models.DateField()
     deadline_at = models.DateTimeField()
+    started_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(
         max_length=9, choices=Status.choices, default=Status.PENDING
     )

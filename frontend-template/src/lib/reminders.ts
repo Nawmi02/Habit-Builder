@@ -32,6 +32,9 @@ export interface PlanItem {
   name: string;
   emoji: string;
   habitType: HabitType;
+  targetType?: 'YES_NO' | 'COUNT' | 'DURATION';
+  targetValue?: number;
+  startedAt?: string | null;
   status: OccurrenceStatus;
   /** "HH:MM", or null when this habit has reminders turned off. */
   reminderTime: string | null;
@@ -61,7 +64,7 @@ export interface PlannedNotification {
   level: 1 | 2 | 3 | 4;
   title: string;
   body: string;
-  data: { date: string; occurrenceId?: number };
+  data: { date: string; occurrenceId?: number; habitId?: number; name?: string; habitType?: string; phase?: 'start' | 'finish'; targetType?: string; targetValue?: number };
 }
 
 // ---- tunable product constants (minutes after midnight, phone-local) ----
@@ -133,6 +136,7 @@ export function planReminders(input: PlanInput): PlannedNotification[] {
   const cap = input.maxScheduled ?? DEFAULT_MAX_SCHEDULED;
   const earliest = input.now.getTime() + 5000; // never schedule "now"
   const all: (PlannedNotification & { priority: number })[] = [];
+  const retryMinutes = [0, 5, 20, 40, 60, 90, 115];
 
   for (const day of input.days) {
     const pending = day.items.filter((i) => i.status === 'PENDING');
@@ -140,26 +144,35 @@ export function planReminders(input: PlanInput): PlannedNotification[] {
 
     const push = (n: PlannedNotification) => all.push({ ...n, priority: PRIORITY[n.kind] });
 
-    // 1) each pending habit, at its own reminder time
+    // Each habit gets its own start prompt and a small number of retries over two hours.
     for (const item of pending) {
       if (!item.reminderTime) continue;
       const m = minutesOf(item.reminderTime);
-      push({
-        key: `${day.date}|habit|${item.habitId}|${hhmm(m)}`,
-        fireAt: at(day.date, m),
-        kind: 'habit',
-        level: 1,
-        title: `${item.emoji} ${item.name}`,
-        body:
-          item.habitType === 'BAD'
-            ? 'Check in: did you stay strong today?'
-            : 'Your habit is waiting. Keep the streak going!',
-        data: { date: day.date, occurrenceId: item.occurrenceId },
+      const isStarted = !!item.startedAt;
+      const targetType = item.targetType ?? 'YES_NO';
+      const targetValue = item.targetValue ?? 1;
+      const durationMinutes = targetType === 'DURATION' ? targetValue : 30;
+      const base = isStarted
+        ? new Date(new Date(item.startedAt as string).getTime() + durationMinutes * 60_000)
+        : at(day.date, m);
+      const offsets = isStarted ? retryMinutes : retryMinutes;
+      offsets.forEach((offset, attempt) => {
+        const fireAt = new Date(base.getTime() + offset * 60_000);
+        if (!isStarted && m + offset >= 24 * 60) return;
+        push({
+          key: `${day.date}|${isStarted ? 'finish' : 'habit'}|${item.habitId}|${fireAt.getTime()}`,
+          fireAt,
+          kind: 'habit',
+          level: attempt > 3 ? 3 : 1,
+          title: isStarted ? 'Target achieved today?' : `${item.emoji} ${item.name}`,
+          body: isStarted ? `${item.name} — did you reach your target?` : item.habitType === 'BAD' ? 'Start now? Tap Yes when you are ready to avoid this habit.' : 'Start habit now?',
+          data: { date: day.date, occurrenceId: item.occurrenceId, habitId: item.habitId, name: item.name, habitType: item.habitType, phase: isStarted ? 'finish' : 'start', targetType, targetValue },
+        });
       });
     }
 
     // 2) the shared escalation ladder
-    const times = pending.filter((i) => i.reminderTime).map((i) => minutesOf(i.reminderTime as string));
+      const times: number[] = [];
     const anchor = times.length ? Math.min(...times) : DEFAULT_ANCHOR;
     ladderMinutes(input.intensity, anchor).forEach((m, idx) => {
       const level = ladderLevel(m);
@@ -175,7 +188,7 @@ export function planReminders(input: PlanInput): PlannedNotification[] {
       });
     });
 
-    // 3) streak-at-risk at 20:00 - only when we actually KNOW a streak of 3+ is on the line
+    // 3) Streak alerts are omitted: the time-based start reminders now own this flow.
     if (input.streakAlertEnabled) {
       const atRisk = pending.filter((i) => (i.currentStreak ?? 0) >= 3);
       if (atRisk.length) {
@@ -205,5 +218,5 @@ export function planReminders(input: PlanInput): PlannedNotification[] {
     kept.push(n);
   }
 
-  return kept.slice(0, cap).map(({ priority: _p, ...n }) => n);
+  return future.filter((n) => n.kind === 'habit').slice(0, cap).map(({ priority: _p, ...n }) => n);
 }

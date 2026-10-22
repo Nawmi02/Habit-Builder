@@ -7,6 +7,7 @@
 import { api } from '../api';
 import { timeFromApi } from '../api/mappers';
 import type { Checklist, User } from '../api/types';
+import { Platform } from 'react-native';
 import { flattenChecklist } from '../lib/checklist';
 import { addDays, toDateString } from '../lib/dates';
 import type { PlanDay } from '../lib/reminders';
@@ -16,6 +17,9 @@ import { applyPlan, cancelAllReminders } from './scheduler';
 const HORIZON_DAYS = 3;
 
 export async function syncReminders(user: Pick<User, 'notifications_enabled'>): Promise<number> {
+  // Web browsers cannot reliably schedule notifications while the app is closed.
+  if (Platform.OS === 'web') return 0;
+
   if (!user.notifications_enabled) {
     await cancelAllReminders();
     return 0;
@@ -56,6 +60,9 @@ export async function syncReminders(user: Pick<User, 'notifications_enabled'>): 
       name: i.name,
       emoji: i.icon,
       habitType: i.habit_type,
+      targetType: i.target_type,
+      targetValue: i.target_value,
+      startedAt: i.started_at,
       status: i.status,
       reminderTime: prefs.mutedHabitIds.includes(i.habit_id) ? null : (reminderTime.get(i.habit_id) ?? null),
       currentStreak: streaks.get(i.habit_id),

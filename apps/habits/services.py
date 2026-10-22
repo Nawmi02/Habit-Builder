@@ -11,7 +11,7 @@ According to ER:
   (or the start date), each due by Sunday
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 from django.utils import timezone
 
@@ -43,6 +43,19 @@ def _end_of_local_day(user, day: date):
 
     local = datetime.combine(day, time(23, 59, 59), tzinfo=tz)
     return local.astimezone(ZoneInfo("UTC"))
+
+
+def _occurrence_deadline(user, day: date, schedule: HabitSchedule):
+    """Give a scheduled habit two hours to start/check in after its reminder."""
+    if not schedule.reminder_time:
+        return _end_of_local_day(user, day)
+    from zoneinfo import ZoneInfo
+
+    try:
+        tz = ZoneInfo(user.time_zone)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    return (datetime.combine(day, schedule.reminder_time, tzinfo=tz) + timedelta(hours=2)).astimezone(ZoneInfo("UTC"))
 
 
 def _paused(schedule: HabitSchedule, day: date) -> bool:
@@ -84,7 +97,7 @@ def generate_occurrences(habit: Habit, days: int = HORIZON_DAYS) -> int:
                 HabitOccurrence(
                     habit=habit,
                     scheduled_date=day,
-                    deadline_at=_end_of_local_day(user, day),
+                    deadline_at=_occurrence_deadline(user, day, schedule),
                 )
             )
 
@@ -94,7 +107,7 @@ def generate_occurrences(habit: Habit, days: int = HORIZON_DAYS) -> int:
                     HabitOccurrence(
                         habit=habit,
                         scheduled_date=day,
-                        deadline_at=_end_of_local_day(user, day),
+                    deadline_at=_occurrence_deadline(user, day, schedule),
                     )
                 )
 
@@ -144,6 +157,11 @@ def generate_occurrences(habit: Habit, days: int = HORIZON_DAYS) -> int:
         occurrences = HabitOccurrence.objects.filter(
             habit=habit, scheduled_date__in=dates
         )
+        for occurrence in occurrences.filter(started_at__isnull=True):
+            deadline = _occurrence_deadline(user, occurrence.scheduled_date, schedule)
+            if occurrence.deadline_at != deadline:
+                occurrence.deadline_at = deadline
+                occurrence.save(update_fields=["deadline_at"])
         now = timezone.now()
         reminders = [
             Reminder(

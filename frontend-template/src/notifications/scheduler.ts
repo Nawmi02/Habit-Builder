@@ -19,14 +19,14 @@ let notificationsPromise: Promise<NotificationsModule | null> | null = null;
  * That must not prevent the rest of the app from opening.
  */
 function getNotifications(): Promise<NotificationsModule | null> {
-  // Expo Go may not contain the native module required by this package.
-  // Do not import expo-notifications at all in Expo Go.
-  if (Constants.executionEnvironment === 'storeClient') {
+  // expo-notifications is native only; importing it during web/SSR can access
+  // browser globals before they exist and produce a server render error.
+  if (Platform.OS === 'web') {
     return Promise.resolve(null);
   }
 
   if (!notificationsPromise) {
-    notificationsPromise = import('expo-notifications').catch((error) => {
+    notificationsPromise = loadNotificationApis().catch((error) => {
       console.warn(
         'Notifications unavailable:',
         error instanceof Error ? error.message : error,
@@ -38,8 +38,47 @@ function getNotifications(): Promise<NotificationsModule | null> {
   return notificationsPromise;
 }
 
+/**
+ * Load only local-notification APIs. Importing expo-notifications' barrel also
+ * eagerly loads its Android push-topic module, which Expo Go does not include.
+ */
+async function loadNotificationApis(): Promise<NotificationsModule> {
+  const [permissions, handler, emitter, scheduler, cancel, channel, category, notificationTypes, channelTypes] = await Promise.all([
+    import('expo-notifications/build/NotificationPermissions'),
+    import('expo-notifications/build/NotificationsHandler'),
+    import('expo-notifications/build/NotificationsEmitter'),
+    import('expo-notifications/build/scheduleNotificationAsync'),
+    import('expo-notifications/build/cancelAllScheduledNotificationsAsync'),
+    import('expo-notifications/build/setNotificationChannelAsync'),
+    import('expo-notifications/build/setNotificationCategoryAsync'),
+    import('expo-notifications/build/Notifications.types'),
+    import('expo-notifications/build/NotificationChannelManager.types'),
+  ]);
+
+  const push = Constants.executionEnvironment === 'storeClient'
+    ? {}
+    : await import('expo-notifications/build/getExpoPushTokenAsync');
+
+  return {
+    ...permissions,
+    ...handler,
+    ...emitter,
+    ...scheduler,
+    ...cancel,
+    ...channel,
+    ...category,
+    ...push,
+    AndroidImportance: channelTypes.AndroidImportance,
+    SchedulableTriggerInputTypes: notificationTypes.SchedulableTriggerInputTypes,
+  } as unknown as NotificationsModule;
+}
+
 /** Called at startup. Failure to load notifications must never crash the app. */
 export function configureNotifications(): void {
+  if (Platform.OS === 'web') {
+    return;
+  }
+
   void getNotifications()
     .then((Notifications) => {
       Notifications?.setNotificationHandler({
@@ -50,10 +89,68 @@ export function configureNotifications(): void {
           shouldShowList: true,
         }),
       });
+      if (Notifications) {
+        void Notifications.setNotificationCategoryAsync('HABIT_START', [
+          { identifier: 'START_YES', buttonTitle: 'Yes, start' },
+          { identifier: 'START_NO', buttonTitle: 'No' },
+        ]);
+        void Notifications.setNotificationCategoryAsync('HABIT_FINISH', [
+          { identifier: 'FINISH_YES', buttonTitle: 'Yes, done' },
+          { identifier: 'FINISH_NO', buttonTitle: 'No' },
+        ]);
+        void Notifications.addNotificationResponseReceivedListener((response) => {
+          void handleHabitAction(Notifications, response).catch((error) =>
+            console.warn('Could not process habit reminder action:', error),
+          );
+        });
+      }
     })
     .catch(() => {
       // Notifications are optional during app startup.
     });
+}
+
+async function handleHabitAction(Notifications: NotificationsModule, response: import('expo-notifications').NotificationResponse) {
+  const { actionIdentifier } = response;
+  const data = response.notification.request.content.data as Record<string, unknown>;
+  const occurrenceId = Number(data.occurrenceId);
+  const habitId = Number(data.habitId);
+  if (!occurrenceId || !habitId) return;
+
+  if (actionIdentifier === 'START_YES' && data.phase === 'start') {
+    await api.occurrences.start(occurrenceId);
+    // Re-plan with the saved start time; this schedules the target prompt and retries.
+    await syncAfterReminderAction();
+    return;
+  }
+
+  if (actionIdentifier === 'FINISH_YES' && data.phase === 'finish') {
+    if (String(data.habitType ?? 'GOOD') === 'BAD') await api.occurrences.skip(occurrenceId, {});
+    else await api.occurrences.complete(occurrenceId, { progress_value: Number(data.targetValue ?? 1), mood: 'GOOD' });
+    await Notifications.scheduleNotificationAsync({
+      content: { title: '🎉🎊🥳', body: 'Target achieved! Great work.' },
+      trigger: null,
+    });
+    await syncAfterReminderAction();
+    return;
+  }
+
+  if (actionIdentifier === 'FINISH_NO' && data.phase === 'finish') {
+    await Notifications.scheduleNotificationAsync({
+      content: { title: '😞💔 Better luck next time', body: 'Your streak did not increase today.' },
+      trigger: null,
+    });
+  }
+}
+
+async function syncAfterReminderAction() {
+  try {
+    const user = await api.users.me();
+    const { syncReminders } = await import('./syncReminders');
+    await syncReminders(user);
+  } catch {
+    // The action itself is recorded before the optional reminder refresh.
+  }
 }
 
 /** Request permission before scheduling local reminders. */
@@ -64,7 +161,10 @@ export async function ensurePermission(): Promise<boolean> {
     return false;
   }
 
-  if (Platform.OS === 'android') {
+  // Expo Go's Android host can lack the channel provider even though local
+  // notifications are available. In that case use its fallback channel.
+  const canCreateChannels = Constants.executionEnvironment !== 'storeClient';
+  if (Platform.OS === 'android' && canCreateChannels) {
     await Notifications.setNotificationChannelAsync(CHANNEL_ID, {
       name: 'Habit reminders',
       importance: Notifications.AndroidImportance.HIGH,
@@ -116,6 +216,7 @@ export async function applyPlan(input: PlanInput): Promise<number> {
   }
 
   if (!(await ensurePermission())) {
+    console.warn('Habit reminders were not scheduled: notification permission is not granted. Enable notifications for Habit Builder in Android settings.');
     return 0;
   }
 
@@ -126,15 +227,18 @@ export async function applyPlan(input: PlanInput): Promise<number> {
         title: reminder.title,
         body: reminder.body,
         data: reminder.data,
+        categoryIdentifier: reminder.data.phase === 'finish' ? 'HABIT_FINISH' : 'HABIT_START',
         sound: true,
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
         date: reminder.fireAt,
-        channelId: CHANNEL_ID,
+        ...(Constants.executionEnvironment === 'storeClient' ? {} : { channelId: CHANNEL_ID }),
       },
     });
   }
+
+  console.info(`Scheduled ${plan.length} local habit reminder(s).`);
 
   return plan.length;
 }
@@ -156,7 +260,7 @@ export async function scheduleTestReminder(): Promise<boolean> {
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
       seconds: 5,
-      channelId: CHANNEL_ID,
+      ...(Constants.executionEnvironment === 'storeClient' ? {} : { channelId: CHANNEL_ID }),
     },
   });
 
@@ -166,6 +270,11 @@ export async function scheduleTestReminder(): Promise<boolean> {
 /** Register this device for Expo push notifications when supported. */
 export async function registerPushToken(): Promise<void> {
   try {
+    // Expo Go on Android supports local notifications but not remote push tokens.
+    if (Platform.OS === 'web' || Constants.executionEnvironment === 'storeClient') {
+      return;
+    }
+
     if (!Device.isDevice) {
       return;
     }
@@ -207,8 +316,9 @@ export async function unregisterPushToken(): Promise<void> {
       await api.devices.unregister(token);
     }
 
-    await AsyncStorage.removeItem(PUSH_TOKEN_KEY);
   } catch {
     // Sign-out should not fail because push registration could not be removed.
+  } finally {
+    await AsyncStorage.removeItem(PUSH_TOKEN_KEY).catch(() => {});
   }
 }

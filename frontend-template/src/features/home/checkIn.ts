@@ -4,6 +4,7 @@ import { apiActionFor, moodToApi, requiresSkipReason } from '../../api/mappers';
 import type { Badge } from '../../api/types';
 import type { CheckInRequest } from '../../components/CompletionSheet';
 import { newlyUnlocked } from '../../lib/badges';
+import { syncReminders } from '../../notifications/syncReminders';
 
 /**
  * Performs one check-in against the real endpoints and returns any badges it just unlocked.
@@ -37,5 +38,10 @@ export async function performCheckIn(req: CheckInRequest, qc: QueryClient): Prom
 
   const after = await api.badges.list().catch(() => before);
   qc.setQueryData(['badges'], after);
+  try {
+    await syncReminders(await api.users.me());
+  } catch {
+    // A reminder refresh must not undo a successful check-in.
+  }
   return newlyUnlocked(before, after);
 }

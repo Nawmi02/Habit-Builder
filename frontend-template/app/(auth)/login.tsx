@@ -52,7 +52,6 @@ export default function Login() {
             <Text style={{ color: colors.muted }}>New here? </Text>
             <Link href="/register" style={{ color: colors.primary, fontWeight: '700' }}>Create an account</Link>
           </View>
-          {/* "Forgot password?" is in the prototype, but the backend has no reset endpoint yet. */}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

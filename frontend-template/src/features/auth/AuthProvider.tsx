@@ -5,6 +5,7 @@ import { api, onAuthLost, tokens } from '../../api';
 import { NetworkError } from '../../api/errors';
 import type { LoginRequest, RegisterRequest, User } from '../../api/types';
 import { cancelAllReminders, registerPushToken, unregisterPushToken } from '../../notifications/scheduler';
+import { syncReminders } from '../../notifications/syncReminders';
 
 type Status = 'loading' | 'signedOut' | 'signedIn';
 
@@ -42,6 +43,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(u);
       setStatus('signedIn');
       registerPushToken(); // fire and forget - never blocks or throws
+      void syncReminders(u).catch((error) => {
+        console.warn('Could not sync reminders:', error);
+      });
     },
     [setUser],
   );
@@ -114,7 +118,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(async () => {
     await unregisterPushToken();
     await cancelAllReminders().catch(() => {});
-    await tokens.clear();
+    await tokens.clear().catch(() => {});
     await leave();
   }, [leave]);
 

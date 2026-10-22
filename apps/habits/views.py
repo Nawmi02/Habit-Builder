@@ -24,7 +24,7 @@ from .serializers import (
     UserRewardSerializer,
 )
 from .services import generate_occurrences, remove_future_pending
-from .progress import complete_occurrence, skip_occurrence, undo_occurrence
+from .progress import complete_occurrence, mark_occurrence_missed, skip_occurrence, undo_occurrence
 
 
 class HabitViewSet(viewsets.ModelViewSet):
@@ -111,6 +111,7 @@ class HabitViewSet(viewsets.ModelViewSet):
     def occurrences(self, request, pk=None):
         """List occurrences for a habit."""
         habit = self.get_object()
+        _expire_user_occurrences(request.user)
         qs = habit.occurrences.all().order_by("scheduled_date")
 
         from_date = request.query_params.get("from")
@@ -130,6 +131,7 @@ class HabitViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"])
     def checklist(self, request):
         """Today's checklist grouped by time_of_day."""
+        _expire_user_occurrences(request.user)
         # today's date in user's timezone
         try:
             user_tz = ZoneInfo(request.user.time_zone)
@@ -189,13 +191,52 @@ class HabitViewSet(viewsets.ModelViewSet):
         })
 
 
+def _expire_user_occurrences(user):
+    """Resolve overdue items when the user opens the app, even without Celery running."""
+    from .services import _occurrence_deadline
+
+    pending = HabitOccurrence.objects.filter(
+        habit__user=user,
+        status=HabitOccurrence.Status.PENDING,
+        started_at__isnull=True,
+    ).select_related("habit__schedule")
+    for occurrence in pending:
+        schedule = getattr(occurrence.habit, "schedule", None)
+        if schedule:
+            deadline = _occurrence_deadline(user, occurrence.scheduled_date, schedule)
+            if occurrence.deadline_at != deadline:
+                occurrence.deadline_at = deadline
+                occurrence.save(update_fields=["deadline_at"])
+
+    overdue = HabitOccurrence.objects.filter(
+        habit__user=user,
+        habit__status=Habit.Status.ACTIVE,
+        status=HabitOccurrence.Status.PENDING,
+        deadline_at__lte=timezone.now(),
+    ).values_list("pk", flat=True)
+    for occurrence_id in overdue:
+        mark_occurrence_missed(occurrence_id)
+
+
 class OccurrenceCompletionView(APIView):
-    """Record a completion or a skip for an occurrence owned by the caller."""
+    """Start, complete, or skip an occurrence owned by the caller."""
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk, action_name):
+        from datetime import timedelta
+        from django.utils import timezone
+
         occurrence = get_object_or_404(HabitOccurrence, pk=pk, habit__user=request.user)
+        if action_name == "start":
+            if occurrence.status != HabitOccurrence.Status.PENDING:
+                return Response({"status": "Only pending habits can be started."}, status=400)
+            if occurrence.started_at is None:
+                duration = occurrence.habit.target_value if occurrence.habit.target_type == Habit.TargetType.DURATION else 30
+                occurrence.started_at = timezone.now()
+                occurrence.deadline_at = occurrence.started_at + timedelta(minutes=duration + 120)
+                occurrence.save(update_fields=["started_at", "deadline_at"])
+            return Response(HabitOccurrenceSerializer(occurrence).data)
         if action_name == "undo":
             occurrence, streak, reward = undo_occurrence(
                 occurrence_id=occurrence.pk, user=request.user
@@ -221,6 +262,9 @@ class OccurrenceCompletionView(APIView):
                 },
                 status=status.HTTP_201_CREATED,
             )
+
+        if action_name != "skip":
+            return Response({"detail": "Unknown occurrence action."}, status=status.HTTP_400_BAD_REQUEST)
 
         payload = SkipInputSerializer(data=request.data)
         payload.is_valid(raise_exception=True)

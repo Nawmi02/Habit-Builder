@@ -8,6 +8,7 @@ import {
   Image,
   Modal,
   Pressable,
+  Platform,
   ScrollView,
   StyleSheet,
   Switch,
@@ -128,6 +129,7 @@ export default function SettingsScreen() {
 
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [loadingNotifications, setLoadingNotifications] = useState(true);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   const isDark = mode === 'dark';
 
@@ -140,16 +142,12 @@ export default function SettingsScreen() {
     ? `dayleebit.profile-photo.${accountKey}`
     : null;
 
-  const notificationStorageKey = accountKey
-    ? `dayleebit.notifications.${accountKey}`
-    : null;
-
   useEffect(() => {
     let mounted = true;
 
     async function loadPreferences() {
       setLoadingPhoto(true);
-      setLoadingNotifications(true);
+      setLoadingNotifications(false);
 
       try {
         if (photoStorageKey) {
@@ -162,27 +160,12 @@ export default function SettingsScreen() {
           setPhotoUri(null);
         }
 
-        if (notificationStorageKey) {
-          const savedNotifications = await AsyncStorage.getItem(
-            notificationStorageKey,
-          );
-
-          if (mounted) {
-            setNotificationsEnabled(
-              savedNotifications === null
-                ? true
-                : savedNotifications === 'true',
-            );
-          }
-        } else if (mounted) {
-          setNotificationsEnabled(true);
-        }
+        if (mounted) setNotificationsEnabled(user?.notifications_enabled ?? true);
       } catch {
         // Keep default preferences if local storage is unavailable.
       } finally {
         if (mounted) {
           setLoadingPhoto(false);
-          setLoadingNotifications(false);
         }
       }
     }
@@ -192,7 +175,7 @@ export default function SettingsScreen() {
     return () => {
       mounted = false;
     };
-  }, [photoStorageKey, notificationStorageKey]);
+  }, [photoStorageKey, user?.notifications_enabled]);
 
   if (!user) {
     return (
@@ -326,28 +309,39 @@ export default function SettingsScreen() {
   }
 
   async function changeNotificationPreference(enabled: boolean) {
-    if (!notificationStorageKey) return;
+    if (!user) return;
 
     const previousValue = notificationsEnabled;
 
     setNotificationsEnabled(enabled);
 
     try {
-      await AsyncStorage.setItem(
-        notificationStorageKey,
-        String(enabled),
-      );
-    } catch {
+      const updatedUser = await api.users.update({ notifications_enabled: enabled });
+      setUser(updatedUser);
+      const { syncReminders } = await import('../src/notifications/syncReminders');
+      await syncReminders(updatedUser);
+    } catch (error) {
       setNotificationsEnabled(previousValue);
-
-      Alert.alert(
-        'Could not save preference',
-        'Please try changing this setting again.',
-      );
+      showMessage('Could not save preference', describeError(error));
     }
   }
 
+  function showMessage(title: string, message: string) {
+    if (Platform.OS === 'web') {
+      window.alert(`${title}\n\n${message}`);
+      return;
+    }
+    Alert.alert(title, message);
+  }
+
   function confirmLogout() {
+    if (Platform.OS === 'web') {
+      if (window.confirm('Are you sure you want to log out of Dayleebit?')) {
+        void signOut().catch((error) => showMessage('Could not log out', describeError(error)));
+      }
+      return;
+    }
+
     Alert.alert(
       'Log out',
       'Are you sure you want to log out of Dayleebit?',
@@ -364,15 +358,37 @@ export default function SettingsScreen() {
     );
   }
 
-  function explainAccountDeletion() {
-    Alert.alert(
-      'Account deletion',
-      'The current backend does not provide an account-deletion endpoint. Your account has not been deleted.',
-    );
+  async function deleteAccount() {
+    if (deletingAccount) return;
+    setDeletingAccount(true);
+    try {
+      await api.users.deleteAccount();
+      await signOut();
+      router.replace('/login');
+    } catch (error) {
+      showMessage('Could not delete account', describeError(error));
+    } finally {
+      setDeletingAccount(false);
+    }
+  }
+
+  function confirmAccountDeletion() {
+    const message = 'This permanently deletes your account, habits, and progress. This action cannot be undone.';
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Delete your account?\n\n${message}`)) {
+        void deleteAccount();
+      }
+      return;
+    }
+
+    Alert.alert('Delete your account?', message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete account', style: 'destructive', onPress: () => void deleteAccount() },
+    ]);
   }
 
   function explainRating() {
-    Alert.alert(
+    showMessage(
       'Thank you!',
       'A store rating link can be added when Dayleebit is published.',
     );
@@ -551,13 +567,16 @@ export default function SettingsScreen() {
           <SettingRow
             icon="🔔"
             title="Notifications"
-            subtitle="Notification preference for this device"
+            subtitle={Platform.OS === 'web'
+              ? 'Scheduled reminders are available in the mobile app, not in a web browser.'
+              : 'Turn on notifications and set a reminder time for your habits.'}
             trailing={
               loadingNotifications ? (
                 <ActivityIndicator color={colors.primary} />
               ) : (
                 <Switch
                   value={notificationsEnabled}
+                  disabled={Platform.OS === 'web'}
                   onValueChange={(value) =>
                     void changeNotificationPreference(value)
                   }
@@ -637,9 +656,10 @@ export default function SettingsScreen() {
           <SettingRow
             icon="🗑️"
             title="Delete account"
-            subtitle="Permanently remove your account"
+            subtitle={deletingAccount ? 'Deleting your account…' : 'Permanently remove your account and data'}
             danger
-            onPress={explainAccountDeletion}
+            onPress={confirmAccountDeletion}
+            trailing={deletingAccount ? <ActivityIndicator color={colors.danger} /> : undefined}
           />
         </View>
 

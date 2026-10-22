@@ -57,6 +57,7 @@ export function createApi(http: HttpClient) {
     users: {
       me: () => http.get<User>('/users/me/'),
       update: (patch: UserUpdate) => http.patch<User>('/users/me/', patch),
+      deleteAccount: () => http.delete<void>('/users/me/delete/'),
     },
 
     devices: {
@@ -85,6 +86,7 @@ export function createApi(http: HttpClient) {
     },
 
     occurrences: {
+      start: (occurrenceId: ID) => http.post<Occurrence>(`/occurrences/${occurrenceId}/start/`, {}),
       complete: (occurrenceId: ID, body: CompletionInput = {}) =>
         http.post<OccurrenceActionResponse>(`/occurrences/${occurrenceId}/complete/`, body),
       skip: (occurrenceId: ID, body: SkipInput = {}) =>

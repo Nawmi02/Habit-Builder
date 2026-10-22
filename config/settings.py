@@ -100,7 +100,9 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+    {"NAME": "apps.users.password_validators.LetterAndNumberPasswordValidator"},
 ]
+
 
 # Password hashers (NFR-09: Argon2 first)
 PASSWORD_HASHERS = [
@@ -151,7 +153,11 @@ SPECTACULAR_SETTINGS = {
 }
 
 # CORS (for Expo web testing)
-CORS_ALLOW_ALL_ORIGINS = True if DEBUG else False
+CORS_ALLOW_ALL_ORIGINS = DEBUG
+CORS_ALLOWED_ORIGINS = env.list(
+    "CORS_ALLOWED_ORIGINS",
+    default=["http://localhost:8081", "http://127.0.0.1:8081"],
+)
 
 # ============================================
 # Celery

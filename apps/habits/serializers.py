@@ -48,7 +48,7 @@ class HabitOccurrenceSerializer(serializers.ModelSerializer):
         model = HabitOccurrence
         fields = [
             "occurrence_id", "habit_id",
-            "scheduled_date", "deadline_at", "status",
+            "scheduled_date", "deadline_at", "started_at", "status",
         ]
         read_only_fields = ["occurrence_id", "habit_id"]
 
@@ -75,6 +75,7 @@ class HabitOccurrenceDetailSerializer(serializers.ModelSerializer):
             "occurrence_id", "habit_id", "name", "icon", "color",
             "habit_type", "target_type", "target_value", "target_unit",
             "time_of_day", "scheduled_date", "deadline_at", "status",
+            "started_at",
         ]
 
 

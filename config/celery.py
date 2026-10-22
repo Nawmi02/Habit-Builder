@@ -25,6 +25,6 @@ app.conf.beat_schedule = {
     },
     "mark-overdue-habit-occurrences": {
         "task": "apps.habits.tasks.mark_overdue_occurrences_missed",
-        "schedule": crontab(minute=5),  # hourly, after local-day deadlines
+        "schedule": crontab(minute="*/5"),  # apply short reminder deadlines promptly
     },
 }

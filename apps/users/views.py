@@ -1,8 +1,11 @@
+from django.db import transaction
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, mixins, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
 from .models import DeviceToken
 from .serializers import (
@@ -44,6 +47,20 @@ class MeView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user
+
+
+class DeleteMyAccountView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(responses={204: None})
+    def delete(self, request):
+        # All account-owned rows use CASCADE, so deleting this user also removes
+        # their habits, history, rewards, badges, and registered devices.
+        with transaction.atomic():
+            for outstanding in OutstandingToken.objects.filter(user=request.user):
+                BlacklistedToken.objects.get_or_create(token=outstanding)
+            request.user.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class DeviceTokenViewSet(

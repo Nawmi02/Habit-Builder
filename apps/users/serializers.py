@@ -1,5 +1,7 @@
 from zoneinfo import available_timezones
 
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import User, DeviceToken
@@ -29,6 +31,17 @@ class RegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Unknown time zone.")
         return value
 
+    def validate_password(self, value):
+        candidate = User(
+            email=self.initial_data.get("email", ""),
+            name=self.initial_data.get("name", ""),
+        )
+        try:
+            validate_password(value, user=candidate)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(list(exc.messages)) from exc
+        return value
+
     def create(self, validated_data):
         return User.objects.create_user(**validated_data)
 
@@ -47,3 +60,5 @@ class DeviceTokenSerializer(serializers.ModelSerializer):
 
 class DeviceTokenUnregisterSerializer(serializers.Serializer):
     push_token = serializers.CharField(max_length=255)
+
+

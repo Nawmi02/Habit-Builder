@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import React, { useMemo } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -21,6 +22,7 @@ import { Button } from '../../src/components/Button';
 import { toDateString } from '../../src/lib/dates';
 import { useTheme } from '../../src/theme/ThemeProvider';
 import { radius, SCREEN_PADDING } from '../../src/theme/tokens';
+import { syncReminders } from '../../src/notifications/syncReminders';
 
 function getGreeting() {
   const hour = new Date().getHours();
@@ -322,6 +324,29 @@ export default function Home() {
         queryKey: ['home-today-checkins'],
       }),
     ]);
+  }
+
+  async function answerHabit(habit: Habit, choice: 'start' | 'yes' | 'no') {
+    const occurrence = todayRows.find((row) => row.habitId === habit.habit_id)?.occurrence;
+    if (!occurrence || occurrence.status !== 'PENDING') return;
+    try {
+      if (choice === 'start') {
+        await api.occurrences.start(occurrence.occurrence_id);
+      } else if (choice === 'yes') {
+        if (habit.habit_type === 'BAD') await api.occurrences.skip(occurrence.occurrence_id, {});
+        else await api.occurrences.complete(occurrence.occurrence_id, { progress_value: habit.target_value, mood: 'GOOD' });
+        Alert.alert('🎉🎊🥳', 'Target achieved! Great work.');
+      } else if (habit.habit_type === 'BAD') {
+        await api.occurrences.complete(occurrence.occurrence_id, { progress_value: habit.target_value });
+      } else {
+        Alert.alert('😞💔 Better luck next time', 'Your streak did not increase today.');
+        return;
+      }
+      await refreshDashboard();
+      await syncReminders(user!);
+    } catch (error) {
+      Alert.alert('Could not update habit', describeError(error));
+    }
   }
 
   const dateLabel = new Date().toLocaleDateString(undefined, {
@@ -746,14 +771,38 @@ export default function Home() {
 
         {activeHabits.length > 0 && todayQuery.isSuccess ? (
           <>
-            {activeHabits.slice(0, 5).map((habit) => (
-              <TodayHabitRow
-                key={habit.habit_id}
-                habit={habit}
-                status={statusByHabit.get(habit.habit_id)}
-                onPress={() => router.push('/(tabs)/habits')}
-              />
-            ))}
+            {activeHabits.slice(0, 5).map((habit) => {
+              const occurrence = todayRows.find((row) => row.habitId === habit.habit_id)?.occurrence;
+              const isPending = occurrence?.status === 'PENDING';
+              const isStarted = !!occurrence?.started_at;
+              return (
+                <View key={habit.habit_id}>
+                  <TodayHabitRow
+                    habit={habit}
+                    status={statusByHabit.get(habit.habit_id)}
+                    onPress={() => router.push('/(tabs)/habits')}
+                  />
+                  {isPending ? (
+                    <View style={{ flexDirection: 'row', gap: 10, marginTop: -6, marginBottom: 10 }}>
+                      {!isStarted ? (
+                        <Pressable onPress={() => void answerHabit(habit, 'start')} style={styles.quickAction}>
+                          <Text style={styles.quickActionText}>Start habit</Text>
+                        </Pressable>
+                      ) : (
+                        <>
+                          <Pressable onPress={() => void answerHabit(habit, 'yes')} style={styles.quickAction}>
+                            <Text style={styles.quickActionText}>Yes, target achieved 🎉</Text>
+                          </Pressable>
+                          <Pressable onPress={() => void answerHabit(habit, 'no')} style={[styles.quickAction, { backgroundColor: colors.surface }]}>
+                            <Text style={[styles.quickActionText, { color: colors.muted }]}>No</Text>
+                          </Pressable>
+                        </>
+                      )}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
 
             {activeHabits.length > 5 ? (
               <Pressable
@@ -1170,6 +1219,22 @@ const styles = StyleSheet.create({
   habitStatus: {
     alignItems: 'flex-end',
     gap: 5,
+  },
+
+  quickAction: {
+    flex: 1,
+    minHeight: 38,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    backgroundColor: '#6D28D9',
+  },
+
+  quickActionText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
   },
 
   statusDot: {

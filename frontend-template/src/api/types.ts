@@ -135,6 +135,7 @@ export interface Occurrence {
   habit_id: ID;
   scheduled_date: string;
   deadline_at: string;
+  started_at?: string | null;
   status: OccurrenceStatus;
 }
 
