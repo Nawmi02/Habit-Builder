@@ -28,9 +28,9 @@ import { syncReminders } from '../../src/notifications/syncReminders';
 const EMOJIS = ['💧', '🏃', '📖', '🧘', '🏋️', '🥗', '😴', '✍️', '🎯', '🚭', '🧠', '🚶', '🧹', '💊', '📵', '🎸', '🌱', '☀️', '🦷', '🍎'];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const EMPTY_DRAFT: HabitDraft = {
-  name: '', emoji: '💧', colorKey: 'purple', habitType: 'build', targetType: 'yesNo',
-  targetCount: 1, targetDuration: 10, frequency: 'daily', customDays: [],
-  reminderEnabled: true, reminderTime: '08:00', timeOfDay: 'Morning',
+  name: '', emoji: '💧', colorKey: 'purple', habitType: 'build', targetType: 'count',
+  durationEnabled: false, targetCount: 1, targetDuration: 10, frequency: 'daily', customDays: [],
+  reminderEnabled: true, reminderTimes: ['08:00'], reminderTone: 'DEFAULT', timeOfDay: 'Morning',
 };
 
 function Header({ title, subtitle, onBack, action }: { title: string; subtitle?: string; onBack?: () => void; action?: React.ReactNode }) {
@@ -135,12 +135,36 @@ export default function Habits() {
   function updateDraft<K extends keyof HabitDraft>(key: K, value: HabitDraft[K]) {
     setDraft((old) => ({ ...old, [key]: value }));
   }
-  function adjustTarget(delta: number) {
-    if (draft.targetType === 'count') updateDraft('targetCount', Math.max(1, Math.min(999, draft.targetCount + delta)));
-    if (draft.targetType === 'duration') updateDraft('targetDuration', Math.max(1, Math.min(999, draft.targetDuration + delta)));
+  function setTargetCount(value: string) {
+    const targetCount = Math.min(999, Math.max(0, Number.parseInt(value, 10) || 0));
+    setDraft((old) => ({
+      ...old,
+      targetCount,
+      reminderTimes: Array.from({ length: targetCount }, (_, i) => old.reminderTimes[i] ?? '08:00'),
+    }));
+  }
+  function setReminderTime(index: number, value: string) {
+    setDraft((old) => ({
+      ...old,
+      reminderTimes: Array.from(
+        { length: old.targetType === 'count' ? old.targetCount : 1 },
+        (_, i) => i === index ? value : (old.reminderTimes[i] ?? '08:00'),
+      ),
+    }));
+  }
+  function setReminderEnabled(enabled: boolean) {
+    setDraft((old) => ({
+      ...old,
+      reminderEnabled: enabled,
+      reminderTimes: Array.from(
+        { length: old.targetType === 'count' ? old.targetCount : 1 },
+        (_, i) => old.reminderTimes[i] ?? '08:00',
+      ),
+    }));
   }
   function advanceEditor() {
     if (editorStep === 1 && !draft.name.trim()) { setFormError('Give your habit a name first.'); return; }
+    if (editorStep === 2 && draft.targetType === 'count' && draft.targetCount < 1) { setFormError('Count target must be at least 1.'); return; }
     if (editorStep === 2 && draft.frequency === 'custom' && draft.customDays.length === 0) { setFormError('Choose at least one day.'); return; }
     setFormError(null);
     setEditorStep((editorStep + 1) as 2 | 3);
@@ -149,7 +173,7 @@ export default function Habits() {
   async function saveHabit() {
     if (!draft.name.trim()) { setFormError('Give your habit a name first.'); setEditorStep(1); return; }
     if (draft.frequency === 'custom' && draft.customDays.length === 0) { setFormError('Choose at least one day.'); setEditorStep(2); return; }
-    if (draft.reminderEnabled && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(draft.reminderTime)) { setFormError('Enter a valid reminder time in 24-hour format, such as 08:30.'); setEditorStep(3); return; }
+    if (draft.reminderEnabled && (draft.reminderTimes.length !== (draft.targetType === 'count' ? draft.targetCount : 1) || draft.reminderTimes.some((time) => !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)))) { setFormError('Enter a valid 24-hour reminder time for each count.'); setEditorStep(3); return; }
     setSaving(true); setFormError(null);
     try {
       const startDate = editing?.start_date ?? toDateString(new Date());
@@ -220,17 +244,26 @@ export default function Habits() {
             </> : null}
             {editorStep === 2 ? <>
               <Text style={[styles.editorTitle, { color: colors.ink }]}>Make it achievable</Text><Text style={[styles.editorSub, { color: colors.muted }]}>Choose a target and when it fits your day.</Text>
-              <Text style={[styles.fieldLabel, { color: colors.ink }]}>Daily target</Text><View style={styles.choiceRow}><Pill label="Yes / No" selected={draft.targetType === 'yesNo'} onPress={() => updateDraft('targetType', 'yesNo')} /><Pill label="Count" selected={draft.targetType === 'count'} onPress={() => updateDraft('targetType', 'count')} /><Pill label="Duration" selected={draft.targetType === 'duration'} onPress={() => updateDraft('targetType', 'duration')} /></View>
-              {draft.targetType !== 'yesNo' ? <View style={[styles.stepperCard, { backgroundColor: colors.card, borderColor: colors.border }]}><Text style={{ color: colors.ink, fontWeight: '700' }}>{draft.targetType === 'count' ? 'Times per day' : 'Minutes per day'}</Text><View style={styles.stepper}><Pressable onPress={() => adjustTarget(-1)} style={[styles.stepperButton, { backgroundColor: colors.primaryTint }]}><Text style={{ color: colors.primary, fontSize: 20 }}>−</Text></Pressable><Text style={{ color: colors.ink, fontSize: 22, fontWeight: '800', minWidth: 38, textAlign: 'center' }}>{draft.targetType === 'count' ? draft.targetCount : draft.targetDuration}</Text><Pressable onPress={() => adjustTarget(1)} style={[styles.stepperButton, { backgroundColor: colors.primaryTint }]}><Text style={{ color: colors.primary, fontSize: 20 }}>＋</Text></Pressable></View></View> : null}
-              <Text style={[styles.fieldLabel, { color: colors.ink, marginTop: 22 }]}>How often?</Text><View style={styles.choiceRow}>{([{ key: 'daily', label: 'Every day' }, { key: 'weekdays', label: 'Weekdays' }, { key: 'custom', label: 'Custom days' }] as const).map((item) => <Pill key={item.key} label={item.label} selected={draft.frequency === item.key} onPress={() => updateDraft('frequency', item.key)} />)}</View>
+              <Text style={[styles.fieldLabel, { color: colors.ink }]}>Target · Count</Text>
+              <Text style={{ color: colors.muted, fontSize: 12, marginTop: 4 }}>Set the number of counts for each day.</Text>
+              <TextInput value={String(draft.targetCount)} onChangeText={setTargetCount} placeholder="1" placeholderTextColor={colors.faint} keyboardType="number-pad" style={[styles.input, { backgroundColor: colors.card, color: colors.ink, borderColor: colors.border, marginTop: 12 }]} />
+              <View style={[styles.reminderCard, { backgroundColor: colors.card, borderColor: colors.border, marginTop: 14 }]}><View style={{ flex: 1, paddingRight: 16 }}><Text style={{ color: colors.ink, fontWeight: '700', fontSize: 15 }}>Set a duration for each count</Text><Text style={{ color: colors.muted, fontSize: 12, marginTop: 4 }}>Every count uses the same timer. Turn off for an immediate count.</Text></View><Switch value={draft.durationEnabled} onValueChange={(value) => updateDraft('durationEnabled', value)} trackColor={{ true: colors.primary }} /></View>
+              {draft.durationEnabled ? <><Text style={[styles.fieldLabel, { color: colors.ink, marginTop: 16 }]}>Duration per count (minutes)</Text><TextInput value={String(draft.targetDuration)} onChangeText={(value) => updateDraft('targetDuration', Math.min(999, Math.max(0, Number.parseInt(value, 10) || 0)))} placeholder="0" placeholderTextColor={colors.faint} keyboardType="number-pad" style={[styles.input, { backgroundColor: colors.card, color: colors.ink, borderColor: colors.border }]} /><Text style={{ color: colors.muted, fontSize: 12, marginTop: 6 }}>0 minutes is allowed.</Text></> : null}
+              <Text style={[styles.fieldLabel, { color: colors.ink, marginTop: 22 }]}>How often?</Text><View style={styles.choiceRow}>{([{ key: 'daily', label: 'Every day' }, { key: 'custom', label: 'Custom days' }] as const).map((item) => <Pill key={item.key} label={item.label} selected={draft.frequency === item.key} onPress={() => updateDraft('frequency', item.key)} />)}</View>
               {draft.frequency === 'custom' ? <View style={styles.choiceRow}>{DAYS.map((d, i) => <Pill key={d} label={d} selected={draft.customDays.includes(i)} onPress={() => updateDraft('customDays', draft.customDays.includes(i) ? draft.customDays.filter((v) => v !== i) : [...draft.customDays, i])} />)}</View> : null}
               <Text style={[styles.fieldLabel, { color: colors.ink, marginTop: 22 }]}>Best time of day</Text><View style={styles.choiceRow}>{(['Morning', 'Afternoon', 'Evening', 'Anytime'] as const).map((t) => <Pill key={t} label={t} selected={draft.timeOfDay === t} onPress={() => updateDraft('timeOfDay', t)} />)}</View>
             </> : null}
             {editorStep === 3 ? <>
               <Text style={[styles.editorTitle, { color: colors.ink }]}>A little reminder?</Text><Text style={[styles.editorSub, { color: colors.muted }]}>A gentle nudge can help your routine stick.</Text>
-              <View style={[styles.reminderCard, { backgroundColor: colors.card, borderColor: colors.border }]}><View style={{ flex: 1, paddingRight: 16 }}><Text style={{ color: colors.ink, fontWeight: '700', fontSize: 16 }}>Daily reminder</Text><Text style={{ color: colors.muted, fontSize: 12, marginTop: 4 }}>Get a notification at your chosen time.</Text></View><Switch value={draft.reminderEnabled} onValueChange={(v) => updateDraft('reminderEnabled', v)} trackColor={{ true: colors.primary }} /></View>
-              {draft.reminderEnabled ? <><Text style={[styles.fieldLabel, { color: colors.ink, marginTop: 20 }]}>Reminder time (24-hour)</Text><TextInput value={draft.reminderTime} onChangeText={(v) => updateDraft('reminderTime', v)} placeholder="08:00" placeholderTextColor={colors.faint} keyboardType="numbers-and-punctuation" maxLength={5} style={[styles.input, { backgroundColor: colors.card, color: colors.ink, borderColor: colors.border }]} /><Text style={{ color: colors.muted, fontSize: 12, marginTop: 6 }}>Enter a time such as 08:00 or 20:30.</Text></> : null}
-              <View style={[styles.reviewCard, { backgroundColor: colors.primaryTint }]}><Text style={{ fontSize: 30 }}>{draft.emoji}</Text><View style={{ flex: 1 }}><Text style={{ color: colors.ink, fontSize: 16, fontWeight: '800' }}>{draft.name.trim() || 'Your new habit'}</Text><Text style={{ color: colors.muted, fontSize: 12, marginTop: 3 }}>{draft.habitType === 'build' ? 'Build a good habit' : 'Break a bad habit'} · {draft.frequency === 'daily' ? 'Every day' : draft.frequency === 'weekdays' ? 'Monday–Friday' : `${draft.customDays.length} selected days`}</Text><Text style={{ color: colors.muted, fontSize: 12, marginTop: 2 }}>{draft.reminderEnabled ? `Reminder at ${draft.reminderTime}` : 'No reminder'}</Text></View></View>
+              <View style={[styles.reminderCard, { backgroundColor: colors.card, borderColor: colors.border }]}><View style={{ flex: 1, paddingRight: 16 }}><Text style={{ color: colors.ink, fontWeight: '700', fontSize: 16 }}>Daily reminder</Text><Text style={{ color: colors.muted, fontSize: 12, marginTop: 4 }}>Get a notification at your chosen time.</Text></View><Switch value={draft.reminderEnabled} onValueChange={setReminderEnabled} trackColor={{ true: colors.primary }} /></View>
+              {draft.reminderEnabled ? <>
+                <Text style={[styles.fieldLabel, { color: colors.ink, marginTop: 20 }]}>{draft.targetType === 'count' ? `Reminder times (${draft.targetCount}, one per count)` : 'Reminder time'} · 24-hour</Text>
+                {Array.from({ length: draft.targetType === 'count' ? draft.targetCount : 1 }, (_, index) => <View key={index} style={{ marginBottom: 10 }}><Text style={{ color: colors.muted, fontSize: 12, marginBottom: 5 }}>{draft.targetType === 'count' ? `Count ${index + 1} of ${draft.targetCount}` : 'Time'}</Text><TextInput value={draft.reminderTimes[index] ?? '08:00'} onChangeText={(v) => setReminderTime(index, v)} placeholder="08:00" placeholderTextColor={colors.faint} keyboardType="numbers-and-punctuation" maxLength={5} style={[styles.input, { backgroundColor: colors.card, color: colors.ink, borderColor: colors.border }]} /></View>)}
+                <Text style={[styles.fieldLabel, { color: colors.ink, marginTop: 12 }]}>Reminder tone</Text>
+                <View style={styles.choiceRow}>{([{ key: 'DEFAULT', label: 'Default' }, { key: 'CHIME', label: 'Chime' }, { key: 'ALARM', label: 'Alarm' }] as const).map((tone) => <Pill key={tone.key} label={tone.label} selected={draft.reminderTone === tone.key} onPress={() => updateDraft('reminderTone', tone.key)} />)}</View>
+                <Text style={{ color: colors.muted, fontSize: 12, marginTop: 6 }}>Custom tones require a development build; Expo Go uses its default tone.</Text>
+              </> : null}
+              <View style={[styles.reviewCard, { backgroundColor: colors.primaryTint }]}><Text style={{ fontSize: 30 }}>{draft.emoji}</Text><View style={{ flex: 1 }}><Text style={{ color: colors.ink, fontSize: 16, fontWeight: '800' }}>{draft.name.trim() || 'Your new habit'}</Text><Text style={{ color: colors.muted, fontSize: 12, marginTop: 3 }}>{draft.habitType === 'build' ? 'Build a good habit' : 'Break a bad habit'} · {draft.frequency === 'daily' ? 'Every day' : `${draft.customDays.length} selected days`}</Text><Text style={{ color: colors.muted, fontSize: 12, marginTop: 2 }}>{draft.reminderEnabled ? `Reminder at ${draft.reminderTimes.join(", ")}` : 'No reminder'}</Text></View></View>
             </> : null}
             {formError ? <Text style={{ color: colors.danger, marginTop: 16 }}>{formError}</Text> : null}
           </ScrollView>
@@ -262,7 +295,7 @@ function HabitDetailModal({ habit, onClose, onEdit, onToggle, onDelete, busy }: 
         <ScrollView contentContainerStyle={styles.detailContent}>
           <View style={[styles.detailHero, { backgroundColor: colors.card, borderColor: colors.border }]}><View style={[styles.detailEmoji, { backgroundColor: tint(habit.color || '#A78BFA', 0.2) }]}><Text style={{ fontSize: 42 }}>{habit.icon || '✅'}</Text></View><Text style={[styles.detailTitle, { color: colors.ink }]}>{habit.name}</Text><Text style={{ color: colors.muted, marginTop: 6 }}>{habit.habit_type === 'GOOD' ? 'Building a good habit' : 'Breaking a bad habit'}</Text><View style={[styles.statusPill, { backgroundColor: paused ? colors.surface : colors.primaryTint, alignSelf: 'center', marginTop: 12 }]}><Text style={{ color: paused ? colors.muted : colors.primary, fontWeight: '700', fontSize: 11 }}>{paused ? 'PAUSED' : 'ACTIVE'}</Text></View></View>
           <View style={styles.metricRow}><View style={[styles.metricCard, { backgroundColor: colors.card, borderColor: colors.border }]}><Text style={{ color: colors.muted, fontSize: 12 }}>Current streak</Text><Text style={{ color: colors.ink, fontSize: 25, fontWeight: '800', marginTop: 7 }}>{streak.data?.current_streak ?? '—'} 🔥</Text></View><View style={[styles.metricCard, { backgroundColor: colors.card, borderColor: colors.border }]}><Text style={{ color: colors.muted, fontSize: 12 }}>Best streak</Text><Text style={{ color: colors.ink, fontSize: 25, fontWeight: '800', marginTop: 7 }}>{streak.data?.best_streak ?? '—'} 🏆</Text></View></View>
-          <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}><Text style={[styles.sectionTitle, { color: colors.ink }]}>Habit schedule</Text><DetailLine label="Frequency" value={schedule?.frequency_type === 'WEEKDAYS' ? 'Selected weekdays' : 'Every day'} /><DetailLine label="Time of day" value={habit.time_of_day.charAt(0) + habit.time_of_day.slice(1).toLowerCase()} /><DetailLine label="Daily target" value={habit.target_type === 'YES_NO' ? 'Complete once' : `${habit.target_value} ${habit.target_unit || (habit.target_type === 'DURATION' ? 'min' : 'times')}`} /><DetailLine label="Reminder" value={schedule?.reminder_time ? schedule.reminder_time.slice(0, 5) : 'Off'} /></View>
+          <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}><Text style={[styles.sectionTitle, { color: colors.ink }]}>Habit schedule</Text><DetailLine label="Frequency" value={schedule?.frequency_type === 'WEEKDAYS' ? 'Selected weekdays' : 'Every day'} /><DetailLine label="Time of day" value={habit.time_of_day.charAt(0) + habit.time_of_day.slice(1).toLowerCase()} /><DetailLine label="Target" value={`${habit.target_value} ${habit.target_unit || (habit.target_type === 'DURATION' ? 'min' : 'times')}`} />{habit.duration_minutes !== null ? <DetailLine label={habit.target_type === 'COUNT' ? 'Duration per count' : 'Duration'} value={`${habit.duration_minutes} min`} /> : null}<DetailLine label="Reminder" value={schedule?.reminder_times?.length ? schedule.reminder_times.map((time) => time.slice(0, 5)).join(', ') : 'Off'} /><DetailLine label="Tone" value={schedule?.reminder_tone ?? 'DEFAULT'} /></View>
           <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}><Text style={[styles.sectionTitle, { color: colors.ink }]}>Last 4 weeks</Text><View style={styles.heatDots}>{Array.from({ length: 28 }, (_, i) => { const date = new Date(); date.setDate(date.getDate() - (27 - i)); const key = toDateString(date); const occ = occurrences.data?.find((o) => o.scheduled_date === key); const fill = !occ ? colors.surface : occ.status === 'COMPLETED' || occ.status === 'SKIPPED' ? colors.success : occ.status === 'MISSED' ? colors.danger : colors.border; return <View key={key} style={[styles.heatDot, { backgroundColor: fill }]} />; })}</View><View style={styles.legendRow}><Text style={{ color: colors.muted, fontSize: 11 }}>4 weeks ago</Text><Text style={{ color: colors.muted, fontSize: 11 }}>Today</Text></View></View>
           <Button label={paused ? 'Resume habit' : 'Pause habit'} variant="secondary" onPress={onToggle} loading={busy} style={{ marginTop: 6 }} /><Button label="Delete habit" variant="danger" onPress={onDelete} style={{ marginTop: 10 }} />
         </ScrollView>

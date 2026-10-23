@@ -1,7 +1,7 @@
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -23,6 +23,7 @@ import { toDateString } from '../../src/lib/dates';
 import { useTheme } from '../../src/theme/ThemeProvider';
 import { radius, SCREEN_PADDING } from '../../src/theme/tokens';
 import { syncReminders } from '../../src/notifications/syncReminders';
+import { scheduleDurationFinishReminder } from '../../src/notifications/scheduler';
 
 function getGreeting() {
   const hour = new Date().getHours();
@@ -30,6 +31,19 @@ function getGreeting() {
   if (hour < 12) return 'Good morning';
   if (hour < 17) return 'Good afternoon';
   return 'Good evening';
+}
+
+function localTimeHHMM() {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+}
+
+function reminderTimesOf(habit: Habit): string[] {
+  const schedule = habit.schedule;
+  const times = schedule?.reminder_times?.length
+    ? schedule.reminder_times
+    : schedule?.reminder_time ? [schedule.reminder_time] : [];
+  return times.map((time) => time.slice(0, 5));
 }
 
 function SectionTitle({
@@ -222,6 +236,12 @@ export default function Home() {
   const { user } = useAuth();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const [currentTime, setCurrentTime] = useState(localTimeHHMM);
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(localTimeHHMM()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
   const firstName =
     user?.name?.trim().split(/\s+/)[0] || 'there';
@@ -326,24 +346,82 @@ export default function Home() {
     ]);
   }
 
+  async function answerCountHabit(habit: Habit, occurrence: NonNullable<(typeof todayRows)[number]['occurrence']>, countIndex: number, action: 'START' | 'NOT_YET' | 'COMPLETE' | 'FAIL' | 'SKIP') {
+    try {
+      const result = await api.occurrences.countAction(occurrence.occurrence_id, { count_index: countIndex, action });
+      if (action === 'SKIP') Alert.alert('Skipped today', 'Streak −1 · points −20');
+      else if (action === 'NOT_YET') Alert.alert('Okay', 'We’ll remind you again in 15 minutes. You can still start during the one-hour window.');
+      else if (action === 'FAIL') Alert.alert('😞💔 Better luck next time', habit.habit_type === 'BAD' ? 'This count was not resisted. Points −5. You can try this count again.' : 'Points −5. You can try this count again.');
+      else if (action === 'COMPLETE') Alert.alert(result.completed ? '🎊🎉🥳' : 'Count complete', result.completed ? (habit.habit_type === 'BAD' ? 'You resisted every count today! Great work.' : 'All counts complete! Target achieved.') : (habit.habit_type === 'BAD' ? 'Count resisted. Keep going!' : 'Count saved. Keep going!'));
+      else if (action === 'START' && habit.duration_minutes == null && result.completed) Alert.alert('🎊🎉🥳', habit.habit_type === 'BAD' ? 'You resisted every count today! Great work.' : 'All counts complete! Target achieved.');
+      await refreshDashboard();
+      // The count action is already saved. Reminder refresh is best-effort and
+      // must not make a successful Yes/No/Skip look like a failed action.
+      if (user) void syncReminders(user).catch((error) => {
+        console.warn('Could not refresh reminders after count action:', error);
+      });
+    } catch (error) {
+      Alert.alert('Could not update habit', describeError(error));
+    }
+  }
+
   async function answerHabit(habit: Habit, choice: 'start' | 'yes' | 'no') {
     const occurrence = todayRows.find((row) => row.habitId === habit.habit_id)?.occurrence;
     if (!occurrence || occurrence.status !== 'PENDING') return;
     try {
-      if (choice === 'start') {
-        await api.occurrences.start(occurrence.occurrence_id);
+      let startedAt: string | null = null;
+      if (
+        choice === 'yes' &&
+        habit.target_type === 'DURATION' &&
+        occurrence.started_at &&
+        Date.now() < new Date(occurrence.started_at).getTime() + habit.target_value * 60_000
+      ) {
+        Alert.alert('Keep going', 'Your duration target is not finished yet.');
+        return;
+      }
+      if (habit.target_type === 'COUNT' && choice === 'yes') {
+        const times = reminderTimesOf(habit);
+        const nextSlot = times.findIndex((time, index) => time <= currentTime && !(occurrence.completed_count_slots ?? []).includes(index));
+        const result = await api.occurrences.progress(occurrence.occurrence_id, {
+          increment: 1,
+          ...(nextSlot >= 0 ? { slot_index: nextSlot } : {}),
+          source: 'APP',
+          mood: 'GOOD',
+        });
+        if (result.completed) Alert.alert('🎉🎊🥳', 'Target achieved! Great work.');
+        else Alert.alert('Progress saved', `${result.occurrence.progress_value}/${habit.target_value} counts done.`);
+      } else if (choice === 'start') {
+        const started = await api.occurrences.start(occurrence.occurrence_id);
+        startedAt = started.started_at ?? null;
       } else if (choice === 'yes') {
         if (habit.habit_type === 'BAD') await api.occurrences.skip(occurrence.occurrence_id, {});
         else await api.occurrences.complete(occurrence.occurrence_id, { progress_value: habit.target_value, mood: 'GOOD' });
-        Alert.alert('🎉🎊🥳', 'Target achieved! Great work.');
+        Alert.alert('🎉🎊🥳', habit.habit_type === 'BAD' ? 'Great job resisting today!' : 'Target achieved! Great work.');
       } else if (habit.habit_type === 'BAD') {
         await api.occurrences.complete(occurrence.occurrence_id, { progress_value: habit.target_value });
+        Alert.alert('😞💔 Better luck next time', 'Slip recorded. Try again tomorrow.');
       } else {
         Alert.alert('😞💔 Better luck next time', 'Your streak did not increase today.');
         return;
       }
       await refreshDashboard();
-      await syncReminders(user!);
+      let scheduled = 0;
+      try {
+        scheduled = await syncReminders(user!);
+      } catch (error) {
+        console.warn('Could not sync reminders after the habit action:', error);
+      }
+      if (choice === 'start' && user?.notifications_enabled && habit.target_type === 'DURATION' && startedAt && scheduled === 0) {
+        await scheduleDurationFinishReminder({
+          occurrenceId: occurrence.occurrence_id,
+          habitId: habit.habit_id,
+          name: habit.name,
+          habitType: habit.habit_type,
+          targetValue: habit.target_value,
+          startedAt,
+          reminderTone: habit.schedule?.reminder_tone ?? 'DEFAULT',
+        });
+      }
     } catch (error) {
       Alert.alert('Could not update habit', describeError(error));
     }
@@ -775,6 +853,18 @@ export default function Home() {
               const occurrence = todayRows.find((row) => row.habitId === habit.habit_id)?.occurrence;
               const isPending = occurrence?.status === 'PENDING';
               const isStarted = !!occurrence?.started_at;
+              const reminderTimes = reminderTimesOf(habit);
+              const remindersDue = reminderTimes.length === 0 || reminderTimes.some((time) => time <= currentTime);
+              const dueCountIndex = reminderTimes.findIndex((time, index) => time <= currentTime && !(occurrence?.completed_count_slots ?? []).includes(index));
+              const durationEndsAt = occurrence?.started_at && habit.target_type === 'DURATION'
+                ? new Date(occurrence.started_at).getTime() + habit.target_value * 60_000
+                : null;
+              const durationElapsed = durationEndsAt === null || Date.now() >= durationEndsAt;
+              const showQuickAction = habit.target_type === 'COUNT'
+                ? isPending
+                : habit.target_type === 'DURATION'
+                  ? (isStarted ? durationElapsed : remindersDue)
+                  : (isStarted || remindersDue);
               return (
                 <View key={habit.habit_id}>
                   <TodayHabitRow
@@ -782,23 +872,53 @@ export default function Home() {
                     status={statusByHabit.get(habit.habit_id)}
                     onPress={() => router.push('/(tabs)/habits')}
                   />
-                  {isPending ? (
+                  {isPending && showQuickAction ? (
                     <View style={{ flexDirection: 'row', gap: 10, marginTop: -6, marginBottom: 10 }}>
-                      {!isStarted ? (
+                      {habit.target_type === 'COUNT' ? (
+                        <>
+                          <View style={{ flex: 1, gap: 8 }}>
+                            <Text style={{ color: colors.muted, fontSize: 12, fontWeight: '700' }}>{occurrence?.progress_value ?? 0}/{habit.target_value} {habit.habit_type === 'BAD' ? 'resisted' : 'counts done'}</Text>
+                            {Array.from({ length: habit.target_value }, (_, countIndex) => {
+                              const session = occurrence?.count_sessions?.[countIndex];
+                              const completed = (occurrence?.completed_count_slots ?? []).includes(countIndex) || session?.state === 'completed';
+                              const retryUntil = session?.retry_until ? new Date(session.retry_until).getTime() : 0;
+                              const finishAt = session?.finish_at ? new Date(session.finish_at).getTime() : 0;
+                              const durationEnabled = habit.duration_minutes != null;
+                              const waiting = session?.state === 'waiting' && retryUntil > Date.now();
+                              const running = session?.state === 'running' && finishAt > Date.now();
+                              const finishReady = session?.state === 'running' && finishAt <= Date.now();
+                              const initialDue = !reminderTimes.length || reminderTimes[countIndex] <= currentTime;
+                              return <View key={countIndex} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                                <Text style={{ color: colors.muted, fontSize: 12, minWidth: 62 }}>Count {countIndex + 1}</Text>
+                                {completed ? <Text style={{ color: colors.primary, fontWeight: '700' }}>{habit.habit_type === 'BAD' ? 'Resisted ✓' : 'Done ✓'}</Text> : null}
+                                {!completed && running ? <Text style={{ color: colors.muted }}>Timer: {Math.max(1, Math.ceil((finishAt - Date.now()) / 60_000))} min</Text> : null}
+                                {!completed && finishReady ? <><Text style={{ color: colors.ink, fontWeight: '700', fontSize: 13 }}>{habit.habit_type === 'BAD' ? 'Resisted?' : 'Target achieved?'}</Text><Pressable onPress={() => void answerCountHabit(habit, occurrence!, countIndex, 'COMPLETE')} style={styles.quickAction}><Text style={styles.quickActionText}>Yes</Text></Pressable><Pressable onPress={() => void answerCountHabit(habit, occurrence!, countIndex, 'FAIL')} style={[styles.quickAction, { backgroundColor: colors.surface }]}><Text style={[styles.quickActionText, { color: colors.muted }]}>No</Text></Pressable></> : null}
+                                {!completed && !running && !finishReady && (waiting || initialDue || session?.state === 'failed') ? <><Pressable onPress={() => void answerCountHabit(habit, occurrence!, countIndex, 'START')} style={styles.quickAction}><Text style={styles.quickActionText}>{habit.habit_type === 'BAD' ? 'Start resisting' : 'Start habit'}</Text></Pressable><Pressable onPress={() => void answerCountHabit(habit, occurrence!, countIndex, 'NOT_YET')} style={[styles.quickAction, { backgroundColor: colors.surface }]}><Text style={[styles.quickActionText, { color: colors.muted }]}>No</Text></Pressable><Pressable onPress={() => void answerCountHabit(habit, occurrence!, countIndex, 'SKIP')} style={[styles.quickAction, { backgroundColor: colors.surface }]}><Text style={[styles.quickActionText, { color: colors.muted }]}>Skip today</Text></Pressable></> : null}
+                                {!completed && session?.state === 'waiting' && !waiting ? <Text style={{ color: colors.danger, fontSize: 11 }}>Start window ended</Text> : null}
+                              </View>;
+                            })}
+                          </View>
+                        </>
+                      ) : !isStarted ? (
                         <Pressable onPress={() => void answerHabit(habit, 'start')} style={styles.quickAction}>
-                          <Text style={styles.quickActionText}>Start habit</Text>
+                          <Text style={styles.quickActionText}>{habit.habit_type === 'BAD' ? 'Start resistance timer' : 'Start habit'}</Text>
                         </Pressable>
                       ) : (
                         <>
                           <Pressable onPress={() => void answerHabit(habit, 'yes')} style={styles.quickAction}>
-                            <Text style={styles.quickActionText}>Yes, target achieved 🎉</Text>
+                            <Text style={styles.quickActionText}>{habit.habit_type === 'BAD' ? 'Yes, I resisted 💪' : 'Yes, target achieved 🎉'}</Text>
                           </Pressable>
                           <Pressable onPress={() => void answerHabit(habit, 'no')} style={[styles.quickAction, { backgroundColor: colors.surface }]}>
-                            <Text style={[styles.quickActionText, { color: colors.muted }]}>No</Text>
+                            <Text style={[styles.quickActionText, { color: colors.muted }]}>{habit.habit_type === 'BAD' ? 'No, I slipped' : 'No'}</Text>
                           </Pressable>
                         </>
                       )}
                     </View>
+                  ) : null}
+                  {isPending && habit.target_type === 'DURATION' && isStarted && !durationElapsed ? (
+                    <Text style={{ color: colors.muted, fontSize: 12, marginTop: -4, marginBottom: 10 }}>
+                      Target available in {Math.max(1, Math.ceil((durationEndsAt! - Date.now()) / 60_000))} min
+                    </Text>
                   ) : null}
                 </View>
               );

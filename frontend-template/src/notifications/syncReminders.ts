@@ -2,7 +2,7 @@
  * Gathers current state from the API and re-plans every local reminder.
  * Call it whenever something that affects reminders changes: app opens / returns to the
  * foreground, a habit is completed or skipped, a habit is created/edited/paused, or
- * reminder settings change.  (Cost: 1 habits call + 3 checklist calls + up to ~N streak calls.)
+ * reminder settings change.  (Cost: 1 habits call + 7 checklist calls + up to ~N streak calls.)
  */
 import { api } from '../api';
 import { timeFromApi } from '../api/mappers';
@@ -14,7 +14,7 @@ import type { PlanDay } from '../lib/reminders';
 import { loadReminderPrefs } from './prefs';
 import { applyPlan, cancelAllReminders } from './scheduler';
 
-const HORIZON_DAYS = 3;
+const HORIZON_DAYS = 7;
 
 export async function syncReminders(user: Pick<User, 'notifications_enabled'>): Promise<number> {
   // Web browsers cannot reliably schedule notifications while the app is closed.
@@ -30,11 +30,23 @@ export async function syncReminders(user: Pick<User, 'notifications_enabled'>): 
 
   const [habits, ...checklists] = await Promise.all([
     api.habits.list('ACTIVE'),
-    ...dates.map((d) => api.habits.checklist(d).catch((): Checklist | null => null)),
+    ...dates.map((d) => api.habits.checklist(d)),
   ]);
 
   const reminderTime = new Map<number, string | null>(
-    habits.map((h) => [h.habit_id, h.schedule?.reminder_time ? timeFromApi(h.schedule.reminder_time) : null]),
+    habits.map((h) => {
+      const firstTime = h.schedule?.reminder_times?.[0] ?? h.schedule?.reminder_time;
+      return [h.habit_id, firstTime ? timeFromApi(firstTime) : null];
+    }),
+  );
+  const reminderTimes = new Map<number, string[]>(habits.map((h) => [
+    h.habit_id,
+    h.schedule?.reminder_times?.length
+      ? h.schedule.reminder_times.map((time) => timeFromApi(time))
+      : h.schedule?.reminder_time ? [timeFromApi(h.schedule.reminder_time)] : [],
+  ]));
+  const reminderTones = new Map<number, 'DEFAULT' | 'CHIME' | 'ALARM'>(
+    habits.map((h) => [h.habit_id, h.schedule?.reminder_tone ?? 'DEFAULT']),
   );
 
   // Streaks only matter for the "streak at risk" alert, and only for habits still pending today.
@@ -53,8 +65,8 @@ export async function syncReminders(user: Pick<User, 'notifications_enabled'>): 
   }
 
   const days: PlanDay[] = checklists.map((c, idx) => ({
-    date: c?.date ?? dates[idx],
-    items: flattenChecklist(c ?? undefined).map((i) => ({
+    date: c.date ?? dates[idx],
+    items: flattenChecklist(c).map((i) => ({
       occurrenceId: i.occurrence_id,
       habitId: i.habit_id,
       name: i.name,
@@ -62,18 +74,26 @@ export async function syncReminders(user: Pick<User, 'notifications_enabled'>): 
       habitType: i.habit_type,
       targetType: i.target_type,
       targetValue: i.target_value,
+      durationMinutes: i.duration_minutes,
       startedAt: i.started_at,
+      progressValue: i.progress_value,
+      completedCountSlots: i.completed_count_slots,
+      countSessions: i.count_sessions,
       status: i.status,
       reminderTime: prefs.mutedHabitIds.includes(i.habit_id) ? null : (reminderTime.get(i.habit_id) ?? null),
+      reminderTimes: prefs.mutedHabitIds.includes(i.habit_id) ? [] : (reminderTimes.get(i.habit_id) ?? []),
+      reminderTone: reminderTones.get(i.habit_id) ?? 'DEFAULT',
       currentStreak: streaks.get(i.habit_id),
     })),
   }));
 
-  return applyPlan({
+  const scheduled = await applyPlan({
     now: new Date(),
     intensity: prefs.intensity,
     masterEnabled: true,
     streakAlertEnabled: prefs.streakAlert,
     days,
   });
+  console.info(`Reminder sync: ${scheduled} scheduled across ${dates.length} days for ${habits.length} active habit(s).`);
+  return scheduled;
 }

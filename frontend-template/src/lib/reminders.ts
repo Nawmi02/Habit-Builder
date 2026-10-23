@@ -25,6 +25,7 @@
 import type { HabitType, OccurrenceStatus } from '../api/types';
 
 export type ReminderIntensity = 'gentle' | 'motivated' | 'intense';
+export type ReminderTone = 'DEFAULT' | 'CHIME' | 'ALARM';
 
 export interface PlanItem {
   occurrenceId: number;
@@ -34,10 +35,16 @@ export interface PlanItem {
   habitType: HabitType;
   targetType?: 'YES_NO' | 'COUNT' | 'DURATION';
   targetValue?: number;
+  durationMinutes?: number | null;
   startedAt?: string | null;
+  progressValue?: number;
+  completedCountSlots?: number[];
+  countSessions?: { state: string; finish_at?: string; retry_until?: string | null }[];
   status: OccurrenceStatus;
   /** "HH:MM", or null when this habit has reminders turned off. */
   reminderTime: string | null;
+  reminderTimes?: string[];
+  reminderTone?: ReminderTone;
   /** Only if known (needs GET /habits/{id}/streak/). Unknown -> no streak-alert claim. */
   currentStreak?: number;
 }
@@ -64,7 +71,7 @@ export interface PlannedNotification {
   level: 1 | 2 | 3 | 4;
   title: string;
   body: string;
-  data: { date: string; occurrenceId?: number; habitId?: number; name?: string; habitType?: string; phase?: 'start' | 'finish'; targetType?: string; targetValue?: number };
+  data: { date: string; occurrenceId?: number; habitId?: number; name?: string; habitType?: string; phase?: 'start' | 'finish' | 'count' | 'expired'; countIndex?: number; targetType?: string; targetValue?: number; durationMinutes?: number; reminderTone?: ReminderTone };
 }
 
 // ---- tunable product constants (minutes after midnight, phone-local) ----
@@ -146,27 +153,69 @@ export function planReminders(input: PlanInput): PlannedNotification[] {
 
     // Each habit gets its own start prompt and a small number of retries over two hours.
     for (const item of pending) {
-      if (!item.reminderTime) continue;
-      const m = minutesOf(item.reminderTime);
+      if (!item.reminderTime && !item.reminderTimes?.length) continue;
       const isStarted = !!item.startedAt;
+      const configuredTimes = item.reminderTimes?.length
+        ? item.reminderTimes
+        : item.reminderTime ? [item.reminderTime] : [];
+      const reminderTimes = isStarted
+        ? [item.reminderTime ?? configuredTimes[0] ?? null]
+        : configuredTimes;
       const targetType = item.targetType ?? 'YES_NO';
       const targetValue = item.targetValue ?? 1;
+      if (targetType === 'COUNT') {
+        const slots = item.completedCountSlots ?? [];
+        const times = item.reminderTimes?.length ? item.reminderTimes : [item.reminderTime];
+        {
+          times.forEach((time, countIndex) => {
+            if (!time || slots.includes(countIndex)) return;
+            const session = item.countSessions?.[countIndex];
+            const state = session?.state ?? 'pending';
+            const payload = { date: day.date, occurrenceId: item.occurrenceId, habitId: item.habitId, name: item.name, habitType: item.habitType, countIndex, targetType, targetValue, ...(item.durationMinutes == null ? {} : { durationMinutes: item.durationMinutes }), reminderTone: item.reminderTone ?? 'DEFAULT' };
+            if (state === 'running' && session?.finish_at && item.durationMinutes != null) {
+              const finishAt = new Date(session.finish_at);
+              const badHabit = item.habitType === 'BAD';
+              push({ key: `${day.date}|count-finish|${item.habitId}|${countIndex}|${finishAt.getTime()}`, fireAt: finishAt.getTime() <= earliest ? new Date(earliest + 1000) : finishAt, kind: 'habit', level: 1, title: badHabit ? 'Resisted?' : 'Target achieved?', body: badHabit ? `${item.name} · Count ${countIndex + 1}/${targetValue}: did you avoid it?` : `${item.name} · Count ${countIndex + 1}/${targetValue}: did you reach your target?`, data: { ...payload, phase: 'finish' } });
+            } else if (state === 'waiting' && session?.retry_until) {
+              const retryUntil = new Date(session.retry_until).getTime();
+              const windowStart = retryUntil - 60 * 60_000;
+              for (const offset of [15, 30, 45]) {
+                const fireAt = new Date(windowStart + offset * 60_000);
+                if (fireAt.getTime() > earliest && fireAt.getTime() < retryUntil) {
+                  push({ key: `${day.date}|count-retry|${item.habitId}|${countIndex}|${fireAt.getTime()}`, fireAt, kind: 'habit', level: 1, title: item.habitType === 'BAD' ? `${item.emoji} ${item.name} · Count ${countIndex + 1}/${targetValue} · Start resisting?` : `${item.emoji} ${item.name} · Count ${countIndex + 1}/${targetValue}`, body: item.habitType === 'BAD' ? 'Yes starts the resistance timer. No postpones; Skip today ends today’s count.' : 'Start this count now?', data: { ...payload, phase: 'start' } });
+                }
+              }
+              if (retryUntil > earliest) {
+                push({ key: `${day.date}|count-expired|${item.habitId}|${countIndex}|${retryUntil}`, fireAt: new Date(retryUntil), kind: 'habit', level: 1, title: 'Start window ended', body: 'Streak −1 and points −10 (minimum balance 0).', data: { ...payload, phase: 'expired' } });
+              }
+            } else if ((state === 'pending' || state === 'failed') && at(day.date, minutesOf(time)).getTime() > earliest) {
+              const fireAt = at(day.date, minutesOf(time));
+              push({ key: `${day.date}|count-start|${item.habitId}|${countIndex}|${fireAt.getTime()}`, fireAt, kind: 'habit', level: 1, title: item.habitType === 'BAD' ? `${item.emoji} ${item.name} · Count ${countIndex + 1}/${targetValue} · Start resisting?` : `${item.emoji} ${item.name} · Count ${countIndex + 1}/${targetValue}`, body: item.habitType === 'BAD' ? 'Yes starts the resistance timer. No postpones; Skip today ends today’s count.' : 'Start habit now?', data: { ...payload, phase: 'start' } });
+            }
+          });
+          continue;
+        }
+      }
       const durationMinutes = targetType === 'DURATION' ? targetValue : 30;
-      const base = isStarted
-        ? new Date(new Date(item.startedAt as string).getTime() + durationMinutes * 60_000)
-        : at(day.date, m);
-      const offsets = isStarted ? retryMinutes : retryMinutes;
-      offsets.forEach((offset, attempt) => {
-        const fireAt = new Date(base.getTime() + offset * 60_000);
-        if (!isStarted && m + offset >= 24 * 60) return;
-        push({
-          key: `${day.date}|${isStarted ? 'finish' : 'habit'}|${item.habitId}|${fireAt.getTime()}`,
-          fireAt,
-          kind: 'habit',
-          level: attempt > 3 ? 3 : 1,
-          title: isStarted ? 'Target achieved today?' : `${item.emoji} ${item.name}`,
-          body: isStarted ? `${item.name} — did you reach your target?` : item.habitType === 'BAD' ? 'Start now? Tap Yes when you are ready to avoid this habit.' : 'Start habit now?',
-          data: { date: day.date, occurrenceId: item.occurrenceId, habitId: item.habitId, name: item.name, habitType: item.habitType, phase: isStarted ? 'finish' : 'start', targetType, targetValue },
+      const base = isStarted ? new Date(new Date(item.startedAt as string).getTime() + durationMinutes * 60_000) : null;
+      reminderTimes.forEach((time, reminderIndex) => {
+        if (!time) return;
+        const m = minutesOf(time);
+        const start = base ?? at(day.date, m);
+        retryMinutes.forEach((offset, attempt) => {
+          const fireAt = new Date(start.getTime() + offset * 60_000);
+          if (!isStarted && m + offset >= 24 * 60) return;
+          push({
+            key: `${day.date}|${isStarted ? 'finish' : 'habit'}|${item.habitId}|${reminderIndex}|${fireAt.getTime()}`,
+            fireAt,
+            kind: 'habit',
+            level: attempt > 3 ? 3 : 1,
+            title: isStarted ? (item.habitType === 'BAD' ? 'Resisted?' : 'Target achieved today?') : `${item.emoji} ${item.name}`,
+            body: isStarted
+              ? item.habitType === 'BAD' ? `${item.name} — did you avoid it throughout the timer?` : `${item.name} — did you reach your target?`
+              : item.habitType === 'BAD' ? 'Start your resistance session now. Confirm Yes if you avoided it.' : 'Start habit now?',
+            data: { date: day.date, occurrenceId: item.occurrenceId, habitId: item.habitId, name: item.name, habitType: item.habitType, phase: isStarted ? 'finish' : 'start', targetType, targetValue, reminderTone: item.reminderTone ?? 'DEFAULT' },
+          });
         });
       });
     }

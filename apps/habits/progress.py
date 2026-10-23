@@ -1,6 +1,6 @@
 """Atomic completion, miss, streak, and reward updates."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.db import transaction
 from django.utils import timezone
@@ -81,6 +81,17 @@ def _cancel_pending_reminders(occurrence, reason):
     ).update(status=Reminder.Status.CANCELLED, delivery_status=reason)
 
 
+def _require_duration_elapsed(occurrence):
+    if occurrence.habit.target_type != Habit.TargetType.DURATION:
+        return
+    if occurrence.started_at is None:
+        raise ValidationError({"started_at": "Start this habit before completing its duration target."})
+    available_at = occurrence.started_at + timedelta(minutes=occurrence.habit.target_value)
+    if timezone.now() < available_at:
+        remaining = max(1, int((available_at - timezone.now()).total_seconds() // 60) + 1)
+        raise ValidationError({"progress_value": f"The duration target will be ready in about {remaining} minute(s)."})
+
+
 def _current_reward(user):
     """
     USER_REWARD for the user. Points are not added here: the gamification app
@@ -109,10 +120,25 @@ def complete_occurrence(*, occurrence_id, user, data):
     )
     if occurrence.status != HabitOccurrence.Status.PENDING:
         raise ValidationError({"status": "Only pending occurrences can be completed."})
+    _require_duration_elapsed(occurrence)
+    if (
+        occurrence.habit.target_type == Habit.TargetType.COUNT
+        and occurrence.habit.duration_minutes is not None
+        and (
+            len(occurrence.completed_count_slots or []) < occurrence.habit.target_value
+            or len(occurrence.count_sessions or []) < occurrence.habit.target_value
+            or any(session.get("state") != "completed" for session in occurrence.count_sessions or [])
+        )
+    ):
+        raise ValidationError({"progress_value": "Finish every count timer before completing this habit."})
     if data.get("skip_reason"):
         raise ValidationError({"skip_reason": "A completed occurrence cannot have a skip reason."})
 
-    progress_value = data.get("progress_value", occurrence.habit.target_value)
+    progress_value = (
+        occurrence.progress_value
+        if occurrence.habit.target_type == Habit.TargetType.COUNT
+        else data.get("progress_value", occurrence.habit.target_value)
+    )
     if progress_value < occurrence.habit.target_value:
         raise ValidationError({
             "progress_value": f"Reach the target of {occurrence.habit.target_value} before completing this occurrence."
@@ -129,7 +155,8 @@ def complete_occurrence(*, occurrence_id, user, data):
         synced_at=now if data.get("source") == CompletionRecord.Source.SYNC else None,
     )
     occurrence.status = HabitOccurrence.Status.COMPLETED
-    occurrence.save(update_fields=["status"])
+    occurrence.progress_value = max(occurrence.progress_value, progress_value)
+    occurrence.save(update_fields=["status", "progress_value"])
     _cancel_pending_reminders(occurrence, "occurrence_completed")
 
     positive = _is_positive_action(occurrence.habit, action="complete")
@@ -150,8 +177,17 @@ def skip_occurrence(*, occurrence_id, user, data):
     )
     if occurrence.status != HabitOccurrence.Status.PENDING:
         raise ValidationError({"status": "Only pending occurrences can be skipped."})
+    _require_duration_elapsed(occurrence)
     schedule = getattr(occurrence.habit, "schedule", None)
     is_bad_habit = occurrence.habit.habit_type == Habit.HabitType.BAD
+    if (
+        occurrence.habit.target_type == Habit.TargetType.COUNT
+        and data.get("source") != CompletionRecord.Source.REMINDER
+        and occurrence.progress_value < occurrence.habit.target_value
+    ):
+        raise ValidationError({
+            "progress_value": f"Complete all {occurrence.habit.target_value} counts before resolving this occurrence."
+        })
     if not is_bad_habit and schedule and not schedule.skip_allowed:
         raise ValidationError({"status": "Skipping is disabled for this habit."})
     if not is_bad_habit and schedule and schedule.max_skip_per_period:
@@ -170,20 +206,227 @@ def skip_occurrence(*, occurrence_id, user, data):
         raise ValidationError({"skip_reason_id": "Select a reason for skipping this good habit."})
     record = CompletionRecord.objects.create(
         occurrence=occurrence,
-        progress_value=0,
+        progress_value=data.get("progress_value", 0),
         source=data.get("source", CompletionRecord.Source.APP),
         note=data.get("note", ""),
         skip_reason=reason,
         synced_at=timezone.now() if data.get("source") == CompletionRecord.Source.SYNC else None,
     )
     occurrence.status = HabitOccurrence.Status.SKIPPED
-    occurrence.save(update_fields=["status"])
+    occurrence.progress_value = max(occurrence.progress_value, data.get("progress_value", 0))
+    occurrence.save(update_fields=["status", "progress_value"])
     _cancel_pending_reminders(occurrence, "occurrence_skipped")
 
     streak = _update_streak(occurrence.habit, occurrence, positive=positive)
     if positive:
         _streak_rewards(occurrence.habit, streak, occurrence.scheduled_date)
     return record, streak, _current_reward(user)
+
+
+def _count_sessions(occurrence):
+    sessions = list(occurrence.count_sessions or [])
+    while len(sessions) < occurrence.habit.target_value:
+        sessions.append({"state": "pending", "attempt": 0})
+    return sessions
+
+
+def _finish_count_occurrence(occurrence, user):
+    completion_data = {
+        "progress_value": occurrence.progress_value,
+        "source": CompletionRecord.Source.REMINDER,
+        "mood": "GOOD",
+    }
+    if occurrence.habit.habit_type == Habit.HabitType.BAD:
+        return skip_occurrence(occurrence_id=occurrence.pk, user=user, data=completion_data)
+    return complete_occurrence(occurrence_id=occurrence.pk, user=user, data=completion_data)
+
+
+@transaction.atomic
+def apply_count_action(*, occurrence_id, user, count_index, action):
+    """Apply one count slot's reminder response and resolve the occurrence at its final slot."""
+    occurrence = (
+        HabitOccurrence.objects.select_for_update(of=("self",))
+        .select_related("habit__user")
+        .get(pk=occurrence_id, habit__user=user)
+    )
+    if occurrence.status != HabitOccurrence.Status.PENDING:
+        raise ValidationError({"status": "This habit is already resolved for today."})
+    if occurrence.habit.target_type != Habit.TargetType.COUNT:
+        raise ValidationError({"target_type": "This action requires a count habit."})
+    if count_index >= occurrence.habit.target_value:
+        raise ValidationError({"count_index": "This count is outside the target."})
+
+    sessions = _count_sessions(occurrence)
+    session = dict(sessions[count_index])
+    now = timezone.now()
+    duration = timedelta(minutes=occurrence.habit.duration_minutes or 0)
+    streak = reward = record = None
+    completed = False
+
+    if action == "START":
+        if count_index in (occurrence.completed_count_slots or []):
+            raise ValidationError({"count_index": "This count is already complete."})
+        if occurrence.habit.duration_minutes is None:
+            occurrence, completed, record, streak, reward = record_count_progress(
+                occurrence_id=occurrence.pk,
+                user=user,
+                data={"increment": 1, "slot_index": count_index, "source": CompletionRecord.Source.REMINDER, "mood": "GOOD"},
+            )
+            session.update({"state": "completed" if completed else "pending"})
+            return occurrence, completed, session, streak, reward
+        retry_until = session.get("retry_until")
+        if session.get("state") == "waiting" and retry_until and now >= datetime.fromisoformat(retry_until):
+            raise ValidationError({"status": "The one-hour start window has ended."})
+        if session.get("state") == "running":
+            return occurrence, False, session, None, None
+        session.update({
+            "state": "running",
+            "attempt": int(session.get("attempt", 0)) + 1,
+            "started_at": now.isoformat(),
+            "finish_at": (now + duration).isoformat(),
+            "retry_until": None,
+        })
+    elif action == "NOT_YET":
+        if session.get("state") not in ("pending", "failed", "waiting"):
+            raise ValidationError({"status": "This count cannot be postponed now."})
+        if session.get("state") != "waiting":
+            session.update({"state": "waiting", "retry_until": (now + timedelta(hours=1)).isoformat()})
+    elif action in ("COMPLETE", "FAIL"):
+        if occurrence.habit.duration_minutes is None or session.get("state") != "running" or not session.get("finish_at"):
+            raise ValidationError({"status": "Start this count before answering its target prompt."})
+        finish_at = datetime.fromisoformat(session["finish_at"])
+        if now < finish_at:
+            raise ValidationError({"status": "The count duration has not finished yet."})
+        if action == "FAIL":
+            from apps.gamification.services import apply_point_penalty
+
+            session["state"] = "failed"
+            apply_point_penalty(
+                user, 5,
+                f"Count target not achieved: occurrence {occurrence.pk}, count {count_index}, attempt {session.get('attempt', 1)}",
+            )
+        else:
+            session.update({"state": "completed", "completed_at": now.isoformat()})
+            slots = sorted(set(occurrence.completed_count_slots or []) | {count_index})
+            occurrence.completed_count_slots = slots
+            occurrence.progress_value = len(slots)
+            if len(slots) >= occurrence.habit.target_value:
+                sessions[count_index] = session
+                occurrence.count_sessions = sessions
+                occurrence.save(update_fields=["count_sessions", "completed_count_slots", "progress_value"])
+                record, streak, reward = _finish_count_occurrence(occurrence, user)
+                completed = True
+    elif action == "SKIP":
+        occurrence.status = HabitOccurrence.Status.SKIPPED
+        occurrence.save(update_fields=["status"])
+        _cancel_pending_reminders(occurrence, "occurrence_skipped_by_reminder")
+        record = CompletionRecord.objects.create(
+            occurrence=occurrence,
+            progress_value=occurrence.progress_value,
+            source=CompletionRecord.Source.REMINDER,
+            note="REMINDER_SKIP_TODAY",
+        )
+        streak = _update_streak(occurrence.habit, occurrence, positive=False)
+        from apps.gamification.services import apply_point_penalty
+
+        apply_point_penalty(user, 20, f"Skipped today: occurrence {occurrence.pk}")
+        reward = _current_reward(user)
+        return occurrence, False, session, streak, reward
+    else:
+        raise ValidationError({"action": "Unknown count action."})
+
+    sessions[count_index] = session
+    occurrence.count_sessions = sessions
+    occurrence.save(update_fields=["count_sessions", "completed_count_slots", "progress_value"])
+    if completed:
+        occurrence.refresh_from_db()
+    return occurrence, completed, session, streak, reward
+
+
+@transaction.atomic
+def expire_waiting_count_sessions(now=None):
+    """Apply the one-time -1 streak / -10 point penalty after a count's retry hour."""
+    now = now or timezone.now()
+    expired = 0
+    ids = HabitOccurrence.objects.filter(
+        status=HabitOccurrence.Status.PENDING,
+        habit__target_type=Habit.TargetType.COUNT,
+        habit__status=Habit.Status.ACTIVE,
+    ).values_list("pk", flat=True)[:1000]
+    from apps.gamification.services import apply_point_penalty
+
+    for occurrence_id in ids:
+        occurrence = HabitOccurrence.objects.select_for_update(of=("self",)).select_related("habit").get(pk=occurrence_id)
+        sessions = list(occurrence.count_sessions or [])
+        changed = False
+        for count_index, session_value in enumerate(sessions):
+            session = dict(session_value)
+            retry_until = session.get("retry_until")
+            if session.get("state") != "waiting" or not retry_until:
+                continue
+            if datetime.fromisoformat(retry_until) > now:
+                continue
+            session.update({"state": "expired", "retry_until": None, "expired_at": now.isoformat()})
+            sessions[count_index] = session
+            streak = _update_streak(occurrence.habit, occurrence, positive=False)
+            apply_point_penalty(
+                occurrence.habit.user, 10,
+                f"Start window expired: occurrence {occurrence.pk}, count {count_index}",
+            )
+            expired += 1
+            changed = True
+        if changed:
+            occurrence.count_sessions = sessions
+            occurrence.save(update_fields=["count_sessions"])
+    return expired
+
+
+@transaction.atomic
+def record_count_progress(*, occurrence_id, user, data):
+    """Record one COUNT action; resolve and update streak only at the target."""
+    occurrence = (
+        HabitOccurrence.objects.select_for_update(of=("self",))
+        .select_related("habit__schedule")
+        .get(pk=occurrence_id, habit__user=user)
+    )
+    if occurrence.status != HabitOccurrence.Status.PENDING:
+        raise ValidationError({"status": "Only pending occurrences accept progress."})
+    if occurrence.habit.target_type != Habit.TargetType.COUNT:
+        raise ValidationError({"target_type": "Progress updates are only for count targets."})
+
+    slots = list(occurrence.completed_count_slots or [])
+    slot_index = data.get("slot_index")
+    if slot_index is not None:
+        if slot_index >= occurrence.habit.target_value:
+            raise ValidationError({"slot_index": "This reminder is outside the count target."})
+        if slot_index in slots:
+            return occurrence, False, None, None, None
+        slots.append(slot_index)
+        occurrence.completed_count_slots = slots
+
+    occurrence.progress_value = min(
+        occurrence.habit.target_value,
+        occurrence.progress_value + data.get("increment", 1),
+    )
+    occurrence.save(update_fields=["progress_value", "completed_count_slots"])
+    if occurrence.progress_value < occurrence.habit.target_value:
+        return occurrence, False, None, None, None
+
+    completion_data = {
+        "progress_value": occurrence.progress_value,
+        "source": data.get("source", CompletionRecord.Source.APP),
+        "mood": data.get("mood", ""),
+    }
+    if occurrence.habit.habit_type == Habit.HabitType.BAD:
+        record, streak, reward = skip_occurrence(
+            occurrence_id=occurrence.pk, user=user, data=completion_data
+        )
+    else:
+        record, streak, reward = complete_occurrence(
+            occurrence_id=occurrence.pk, user=user, data=completion_data
+        )
+    occurrence.refresh_from_db()
+    return occurrence, True, record, streak, reward
 
 
 @transaction.atomic
@@ -207,7 +450,12 @@ def mark_occurrence_missed(occurrence_id):
     occurrence.status = HabitOccurrence.Status.MISSED
     occurrence.save(update_fields=["status"])
     _cancel_pending_reminders(occurrence, "occurrence_missed")
-    _update_streak(occurrence.habit, occurrence, positive=False)
+    already_penalized = (
+        occurrence.habit.target_type == Habit.TargetType.COUNT
+        and any(session.get("state") == "expired" for session in occurrence.count_sessions or [])
+    )
+    if not already_penalized:
+        _update_streak(occurrence.habit, occurrence, positive=False)
     return True
 
 
@@ -294,7 +542,9 @@ def undo_occurrence(*, occurrence_id, user):
 
     record = CompletionRecord.objects.filter(occurrence=occurrence).first()
     occurrence.status = HabitOccurrence.Status.PENDING
-    occurrence.save(update_fields=["status"])
+    occurrence.progress_value = 0
+    occurrence.completed_count_slots = []
+    occurrence.save(update_fields=["status", "progress_value", "completed_count_slots"])
     if record is not None:
         record.delete()
 

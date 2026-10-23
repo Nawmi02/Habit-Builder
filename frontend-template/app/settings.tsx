@@ -21,6 +21,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { api, describeError } from '../src/api';
 import { useAuth } from '../src/features/auth/AuthProvider';
 import { useTheme } from '../src/theme/ThemeProvider';
+import { scheduleTestReminder } from '../src/notifications/scheduler';
 
 type SettingsModal = 'profile' | 'about' | null;
 
@@ -326,6 +327,20 @@ export default function SettingsScreen() {
     }
   }
 
+  async function sendTestReminder() {
+    try {
+      const scheduled = await scheduleTestReminder();
+      Alert.alert(
+        scheduled ? 'Test reminder scheduled' : 'Notifications are unavailable',
+        scheduled
+          ? 'A test notification should arrive in about 5 seconds. Keep this app in the background.'
+          : 'Allow notifications for Expo Go in your phone settings, then try again.',
+      );
+    } catch (error) {
+      Alert.alert('Could not schedule reminder', describeError(error));
+    }
+  }
+
   function showMessage(title: string, message: string) {
     if (Platform.OS === 'web') {
       window.alert(`${title}\n\n${message}`);
@@ -592,6 +607,15 @@ export default function SettingsScreen() {
           />
 
           <Divider />
+
+          {Platform.OS !== 'web' ? (
+            <Pressable onPress={() => void sendTestReminder()} style={{ paddingHorizontal: 16, paddingVertical: 14 }}>
+              <Text style={{ color: colors.primary, fontWeight: '800' }}>Send test reminder</Text>
+              <Text style={{ color: colors.muted, fontSize: 12, marginTop: 4 }}>Check whether this phone can show local notifications.</Text>
+            </Pressable>
+          ) : null}
+
+          {Platform.OS !== 'web' ? <Divider /> : null}
 
           <SettingRow
             icon="🌙"

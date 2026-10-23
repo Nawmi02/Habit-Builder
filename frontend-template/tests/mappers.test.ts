@@ -25,13 +25,15 @@ const baseDraft: HabitDraft = {
   emoji: '💧',
   colorKey: 'cyan',
   habitType: 'build',
-  targetType: 'yesNo',
-  targetCount: 8,
+  targetType: 'count',
+  durationEnabled: false,
+  targetCount: 1,
   targetDuration: 10,
   frequency: 'daily',
   customDays: [],
   reminderEnabled: true,
-  reminderTime: '07:30',
+  reminderTimes: ['07:30'],
+  reminderTone: 'DEFAULT',
   timeOfDay: 'Morning',
 };
 
@@ -45,20 +47,19 @@ test('weekdays: prototype Sunday=0 <-> backend Monday=0', () => {
   for (let d = 0; d < 7; d++) assert.deepEqual(apiDaysToUi(uiDaysToApi([d])), [d], `round trip ${d}`);
 });
 
-test('draft -> API payload: daily yes/no habit', () => {
+test('draft -> API payload: daily count habit', () => {
   const w = draftToHabitWrite(baseDraft, '2026-10-20');
   assert.equal(w.name, 'Drink Water', 'trimmed');
   assert.equal(w.habit_type, 'GOOD');
   assert.equal(w.color, '#22D3EE');
-  assert.equal(w.target_type, 'YES_NO');
+  assert.equal(w.target_type, 'COUNT');
   assert.equal(w.target_value, 1);
   assert.equal(w.time_of_day, 'MORNING');
   assert.equal(w.start_date, '2026-10-20');
-  assert.deepEqual(w.schedule, { frequency_type: 'DAILY', weekdays: [], reminder_time: '07:30:00', skip_allowed: true });
+  assert.deepEqual(w.schedule, { frequency_type: 'DAILY', weekdays: [], reminder_time: '07:30:00', reminder_times: ['07:30:00'], reminder_tone: 'DEFAULT', skip_allowed: true });
 });
 
-test('draft -> API payload: "weekdays" means Mon-Fri, "custom" converts the day numbers', () => {
-  assert.deepEqual(draftToHabitWrite({ ...baseDraft, frequency: 'weekdays' }, 'x').schedule.weekdays, [0, 1, 2, 3, 4]);
+test('draft -> API payload: custom frequency converts the selected day numbers', () => {
   const custom = draftToHabitWrite({ ...baseDraft, frequency: 'custom', customDays: [0, 6] }, 'x'); // Sun + Sat
   assert.equal(custom.schedule.frequency_type, 'WEEKDAYS');
   assert.deepEqual(custom.schedule.weekdays, [5, 6]);
@@ -72,6 +73,9 @@ test('draft -> API payload: count and duration targets, reminder off => null', (
   const d = draftToHabitWrite({ ...baseDraft, targetType: 'duration', targetDuration: 30, reminderEnabled: false }, 'x');
   assert.deepEqual([d.target_type, d.target_value, d.target_unit], ['DURATION', 30, 'min']);
   assert.equal(d.schedule.reminder_time, null);
+  assert.deepEqual(d.schedule.reminder_times, []);
+  const zeroDuration = draftToHabitWrite({ ...baseDraft, targetType: 'duration', targetDuration: 0 }, 'x');
+  assert.equal(zeroDuration.target_value, 0, 'duration may be zero');
   const zero = draftToHabitWrite({ ...baseDraft, targetType: 'count', targetCount: 0 }, 'x');
   assert.equal(zero.target_value, 1, 'backend needs a positive target');
 });
@@ -97,7 +101,7 @@ test('API habit -> draft round trip (break habit, custom days, reminder)', () =>
   assert.equal(back.frequency, 'custom');
   assert.equal(back.habitType, 'break');
   assert.equal(back.colorKey, 'cyan');
-  assert.equal(back.reminderTime, '07:30');
+  assert.deepEqual(back.reminderTimes, ['07:30']);
   assert.equal(back.reminderEnabled, true);
 });
 

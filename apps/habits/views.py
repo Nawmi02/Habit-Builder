@@ -17,6 +17,7 @@ from .serializers import (
     HabitOccurrenceDetailSerializer,
     CompletionRecordSerializer,
     CompletionInputSerializer,
+    CountActionInputSerializer,
     SkipInputSerializer,
     SkipReasonSerializer,
     StreakSerializer,
@@ -24,7 +25,7 @@ from .serializers import (
     UserRewardSerializer,
 )
 from .services import generate_occurrences, remove_future_pending
-from .progress import complete_occurrence, mark_occurrence_missed, skip_occurrence, undo_occurrence
+from .progress import apply_count_action, complete_occurrence, mark_occurrence_missed, record_count_progress, skip_occurrence, undo_occurrence
 
 
 class HabitViewSet(viewsets.ModelViewSet):
@@ -237,6 +238,44 @@ class OccurrenceCompletionView(APIView):
                 occurrence.deadline_at = occurrence.started_at + timedelta(minutes=duration + 120)
                 occurrence.save(update_fields=["started_at", "deadline_at"])
             return Response(HabitOccurrenceSerializer(occurrence).data)
+        if action_name == "progress":
+            from .serializers import CountProgressInputSerializer
+
+            payload = CountProgressInputSerializer(data=request.data)
+            payload.is_valid(raise_exception=True)
+            occurrence, completed, record, streak, reward = record_count_progress(
+                occurrence_id=occurrence.pk, user=request.user, data=payload.validated_data
+            )
+            response = {
+                "occurrence": HabitOccurrenceSerializer(occurrence).data,
+                "completed": completed,
+            }
+            if completed:
+                response.update({
+                    "completion": CompletionRecordSerializer(record).data,
+                    "streak": StreakSerializer(streak).data,
+                    "reward": UserRewardSerializer(reward).data,
+                })
+            return Response(response, status=status.HTTP_201_CREATED if completed else status.HTTP_200_OK)
+        if action_name == "count-action":
+            payload = CountActionInputSerializer(data=request.data)
+            payload.is_valid(raise_exception=True)
+            occurrence, completed, session, streak, reward = apply_count_action(
+                occurrence_id=occurrence.pk,
+                user=request.user,
+                count_index=payload.validated_data["count_index"],
+                action=payload.validated_data["action"],
+            )
+            response = {
+                "occurrence": HabitOccurrenceSerializer(occurrence).data,
+                "completed": completed,
+                "session": session,
+            }
+            if streak is not None:
+                response["streak"] = StreakSerializer(streak).data
+            if reward is not None:
+                response["reward"] = UserRewardSerializer(reward).data
+            return Response(response, status=status.HTTP_201_CREATED if completed else status.HTTP_200_OK)
         if action_name == "undo":
             occurrence, streak, reward = undo_occurrence(
                 occurrence_id=occurrence.pk, user=request.user

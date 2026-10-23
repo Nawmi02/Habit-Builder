@@ -47,7 +47,8 @@ def _end_of_local_day(user, day: date):
 
 def _occurrence_deadline(user, day: date, schedule: HabitSchedule):
     """Give a scheduled habit two hours to start/check in after its reminder."""
-    if not schedule.reminder_time:
+    reminder_times = schedule.reminder_times or ([schedule.reminder_time] if schedule.reminder_time else [])
+    if not reminder_times:
         return _end_of_local_day(user, day)
     from zoneinfo import ZoneInfo
 
@@ -55,7 +56,8 @@ def _occurrence_deadline(user, day: date, schedule: HabitSchedule):
         tz = ZoneInfo(user.time_zone)
     except Exception:
         tz = ZoneInfo("UTC")
-    return (datetime.combine(day, schedule.reminder_time, tzinfo=tz) + timedelta(hours=2)).astimezone(ZoneInfo("UTC"))
+    last_reminder = max(time.fromisoformat(value) if isinstance(value, str) else value for value in reminder_times)
+    return (datetime.combine(day, last_reminder, tzinfo=tz) + timedelta(hours=2)).astimezone(ZoneInfo("UTC"))
 
 
 def _paused(schedule: HabitSchedule, day: date) -> bool:
@@ -144,7 +146,8 @@ def generate_occurrences(habit: Habit, days: int = HORIZON_DAYS) -> int:
 
     # Materialize each schedule reminder for the generated occurrences. The unique
     # constraint makes this safe when the hourly occurrence task runs repeatedly.
-    if schedule.reminder_time:
+    reminder_times = schedule.reminder_times or ([schedule.reminder_time] if schedule.reminder_time else [])
+    if reminder_times:
         from datetime import datetime
 
         from zoneinfo import ZoneInfo
@@ -170,13 +173,12 @@ def generate_occurrences(habit: Habit, days: int = HORIZON_DAYS) -> int:
                 scheduled_at=scheduled_at,
             )
             for occurrence in occurrences
-            for scheduled_at in [
-                datetime.combine(
-                    occurrence.scheduled_date,
-                    schedule.reminder_time,
-                    tzinfo=user_tz,
-                ).astimezone(ZoneInfo("UTC"))
-            ]
+            for reminder_time in reminder_times
+            for scheduled_at in [datetime.combine(
+                occurrence.scheduled_date,
+                time.fromisoformat(reminder_time) if isinstance(reminder_time, str) else reminder_time,
+                tzinfo=user_tz,
+            ).astimezone(ZoneInfo("UTC"))]
             if scheduled_at > now
         ]
         Reminder.objects.bulk_create(reminders, ignore_conflicts=True)

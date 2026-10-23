@@ -84,6 +84,8 @@ export interface HabitSchedule {
   times_per_week: number | null;
   target_time: string | null;
   reminder_time: string | null; // "HH:MM:SS"
+  reminder_times: string[];
+  reminder_tone: 'DEFAULT' | 'CHIME' | 'ALARM';
   pause_start: string | null;
   pause_end: string | null;
   skip_allowed: boolean;
@@ -99,6 +101,7 @@ export interface Habit {
   color: string; // "#RRGGBB"
   target_type: TargetType;
   target_value: number;
+  duration_minutes: number | null;
   target_unit: string;
   time_of_day: TimeOfDay;
   status: HabitStatus;
@@ -116,6 +119,7 @@ export interface HabitWrite {
   color: string;
   target_type: TargetType;
   target_value: number;
+  duration_minutes: number | null;
   target_unit: string;
   time_of_day: TimeOfDay;
   start_date: string;
@@ -127,6 +131,8 @@ export interface ScheduleWrite {
   weekdays: number[];
   times_per_week?: number | null;
   reminder_time: string | null;
+  reminder_times: string[];
+  reminder_tone: 'DEFAULT' | 'CHIME' | 'ALARM';
   skip_allowed: boolean;
 }
 
@@ -136,7 +142,19 @@ export interface Occurrence {
   scheduled_date: string;
   deadline_at: string;
   started_at?: string | null;
+  progress_value: number;
+  completed_count_slots: number[];
+  count_sessions: CountSession[];
   status: OccurrenceStatus;
+}
+
+export interface CountSession {
+  state: 'pending' | 'waiting' | 'running' | 'completed' | 'failed' | 'expired';
+  attempt?: number;
+  started_at?: string;
+  finish_at?: string;
+  retry_until?: string | null;
+  completed_at?: string;
 }
 
 /** Item of GET /habits/checklist/ (occurrence + denormalised habit fields). */
@@ -147,6 +165,7 @@ export interface ChecklistItem extends Occurrence {
   habit_type: HabitType;
   target_type: TargetType;
   target_value: number;
+  duration_minutes: number | null;
   target_unit: string;
   time_of_day: TimeOfDay;
 }
@@ -244,7 +263,7 @@ export interface PointsSummary {
   badges_unlocked: number;
 }
 
-export type PointRelatedType = 'COMPLETION' | 'DAILY_BONUS' | 'STREAK' | 'BADGE';
+export type PointRelatedType = 'COMPLETION' | 'DAILY_BONUS' | 'STREAK' | 'BADGE' | 'PENALTY';
 
 export interface PointTransaction {
   point_id: ID;

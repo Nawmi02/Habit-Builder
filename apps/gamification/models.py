@@ -90,6 +90,7 @@ class PointTransaction(models.Model):
         DAILY_BONUS = "DAILY_BONUS", "All habits done today"
         STREAK = "STREAK", "Streak milestone"
         BADGE = "BADGE", "Badge unlocked"
+        PENALTY = "PENALTY", "Habit reminder penalty"
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

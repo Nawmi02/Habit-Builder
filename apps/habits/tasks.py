@@ -8,7 +8,7 @@ from django.utils import timezone
 from django.utils.module_loading import import_string
 
 from .models import Habit, HabitOccurrence, Reminder
-from .progress import mark_occurrence_missed
+from .progress import expire_waiting_count_sessions, mark_occurrence_missed
 from .services import generate_occurrences
 
 
@@ -43,6 +43,12 @@ def mark_overdue_occurrences_missed():
     for occurrence_id in overdue_ids:
         missed += mark_occurrence_missed(occurrence_id)
     return missed
+
+
+@shared_task
+def expire_count_start_windows():
+    """Apply count start penalties once each one-hour response window ends."""
+    return expire_waiting_count_sessions()
 
 
 @shared_task

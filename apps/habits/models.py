@@ -63,8 +63,11 @@ class Habit(models.Model):
         max_length=8, choices=TargetType.choices, default=TargetType.YES_NO
     )
     target_value = models.PositiveIntegerField(
-        default=1, validators=[MinValueValidator(1)]
+        default=1, validators=[MinValueValidator(0)]
     )
+    # Optional per-count timer. When set on a COUNT habit, every count slot
+    # uses this same duration.
+    duration_minutes = models.PositiveIntegerField(null=True, blank=True)
     target_unit = models.CharField(max_length=20, blank=True)
     time_of_day = models.CharField(
         max_length=9, choices=TimeOfDay.choices, default=TimeOfDay.ANYTIME
@@ -116,6 +119,12 @@ class HabitSchedule(models.Model):
     )
     target_time = models.TimeField(null=True, blank=True)
     reminder_time = models.TimeField(null=True, blank=True)
+    reminder_times = models.JSONField(default=list, blank=True)
+    reminder_tone = models.CharField(
+        max_length=12,
+        choices=[("DEFAULT", "Default"), ("CHIME", "Chime"), ("ALARM", "Alarm")],
+        default="DEFAULT",
+    )
     pause_start = models.DateField(null=True, blank=True)
     pause_end = models.DateField(null=True, blank=True)
     skip_allowed = models.BooleanField(default=True)
@@ -157,6 +166,10 @@ class HabitOccurrence(models.Model):
     scheduled_date = models.DateField()
     deadline_at = models.DateTimeField()
     started_at = models.DateTimeField(null=True, blank=True)
+    progress_value = models.PositiveIntegerField(default=0)
+    completed_count_slots = models.JSONField(default=list, blank=True)
+    # Per-count state: pending / waiting / running / completed / failed / expired.
+    count_sessions = models.JSONField(default=list, blank=True)
     status = models.CharField(
         max_length=9, choices=Status.choices, default=Status.PENDING
     )

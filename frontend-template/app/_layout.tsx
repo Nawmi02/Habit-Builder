@@ -15,6 +15,7 @@ import {
 import { ApiError } from '../src/api/errors';
 import { AuthProvider, useAuth } from '../src/features/auth/AuthProvider';
 import { configureNotifications } from '../src/notifications/scheduler';
+import { syncReminders } from '../src/notifications/syncReminders';
 import { ThemeProvider, useTheme } from '../src/theme/ThemeProvider';
 
 // Configure how notifications behave while the app is open.
@@ -97,6 +98,18 @@ function Gate() {
  */
 function Themed({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
+
+  useEffect(() => {
+    if (!user) return;
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void syncReminders(user).catch((error) => {
+          console.warn('Could not refresh habit reminders:', error);
+        });
+      }
+    });
+    return () => subscription.remove();
+  }, [user]);
 
   return (
     <ThemeProvider setting={user?.theme ?? 'SYSTEM'}>

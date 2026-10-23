@@ -87,6 +87,10 @@ export function createApi(http: HttpClient) {
 
     occurrences: {
       start: (occurrenceId: ID) => http.post<Occurrence>(`/occurrences/${occurrenceId}/start/`, {}),
+      progress: (occurrenceId: ID, body: { increment?: number; slot_index?: number; source?: 'APP' | 'REMINDER' | 'SYNC'; mood?: string } = {}) =>
+        http.post<{ occurrence: Occurrence; completed: boolean; completion?: OccurrenceActionResponse['completion']; streak?: Streak; reward?: UserReward }>(`/occurrences/${occurrenceId}/progress/`, body),
+      countAction: (occurrenceId: ID, body: { count_index: number; action: 'START' | 'NOT_YET' | 'COMPLETE' | 'FAIL' | 'SKIP' }) =>
+        http.post<{ occurrence: Occurrence; completed: boolean; session: import('./types').CountSession; streak?: Streak; reward?: UserReward }>(`/occurrences/${occurrenceId}/count-action/`, body),
       complete: (occurrenceId: ID, body: CompletionInput = {}) =>
         http.post<OccurrenceActionResponse>(`/occurrences/${occurrenceId}/complete/`, body),
       skip: (occurrenceId: ID, body: SkipInput = {}) =>

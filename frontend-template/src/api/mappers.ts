@@ -6,7 +6,7 @@
  * Mismatches handled:
  *  1. Weekdays: prototype 0 = SUNDAY (S M T W T F S), backend 0 = MONDAY.
  *  2. Habit "kind": prototype build/break  <->  GOOD/BAD.
- *  3. Frequency: prototype daily/weekdays/custom  <->  DAILY / WEEKDAYS(+list). We never send
+ *  3. Frequency: prototype daily/custom  <->  DAILY / WEEKDAYS(+list). We never send
  *     TIMES_PER_WEEK (backend bug: it only ever creates 1 occurrence per week - see report).
  *  4. Colour: prototype uses a key ("purple"), backend stores "#RRGGBB".
  *  5. Mood: prototype Great/Good/Okay/Bad/Awful  <->  GREAT/GOOD/NEUTRAL/LOW/BAD.
@@ -28,8 +28,9 @@ import type {
 // ---------- UI vocabulary (mirrors the prototype's types) ----------
 
 export type UiHabitKind = 'build' | 'break';
-export type UiTargetType = 'yesNo' | 'count' | 'duration';
-export type UiFrequency = 'daily' | 'weekdays' | 'custom';
+export type UiTargetType = 'count';
+export type UiReminderTone = 'DEFAULT' | 'CHIME' | 'ALARM';
+export type UiFrequency = 'daily' | 'custom';
 export type UiTimeOfDay = 'Morning' | 'Afternoon' | 'Evening' | 'Anytime';
 export type UiMood = 'Great' | 'Good' | 'Okay' | 'Bad' | 'Awful';
 export type UiStatus = 'pending' | 'done' | 'skipped' | 'missed';
@@ -41,12 +42,14 @@ export interface HabitDraft {
   colorKey: string;
   habitType: UiHabitKind;
   targetType: UiTargetType;
+  durationEnabled: boolean;
   targetCount: number;
   targetDuration: number; // minutes
   frequency: UiFrequency;
   customDays: number[]; // UI numbering: 0 = Sunday
   reminderEnabled: boolean;
-  reminderTime: string; // "HH:MM"
+  reminderTimes: string[]; // "HH:MM", one per count target
+  reminderTone: UiReminderTone;
   timeOfDay: UiTimeOfDay;
 }
 
@@ -99,23 +102,11 @@ export function apiDaysToUi(days: number[]): number[] {
   return [...out].sort((a, b) => a - b);
 }
 
-const MON_TO_FRI = [0, 1, 2, 3, 4];
 
 // ---------- small enum maps ----------
 
 export const habitTypeToApi = (k: UiHabitKind): HabitType => (k === 'build' ? 'GOOD' : 'BAD');
 export const habitTypeFromApi = (t: HabitType): UiHabitKind => (t === 'GOOD' ? 'build' : 'break');
-
-const TARGET_TO_API: Record<UiTargetType, TargetType> = {
-  yesNo: 'YES_NO',
-  count: 'COUNT',
-  duration: 'DURATION',
-};
-const TARGET_FROM_API: Record<TargetType, UiTargetType> = {
-  YES_NO: 'yesNo',
-  COUNT: 'count',
-  DURATION: 'duration',
-};
 
 const TOD_TO_API: Record<UiTimeOfDay, TimeOfDay> = {
   Morning: 'MORNING',
@@ -166,20 +157,28 @@ export function timeFromApi(t: string | null | undefined, fallback = '08:00'): s
   return t ? t.slice(0, 5) : fallback;
 }
 
+function offsetTime(hhmm: string, hours: number): string {
+  const [h, m] = hhmm.split(':').map(Number);
+  const total = (h * 60 + m + hours * 60) % (24 * 60);
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
 // ---------- habit <-> draft ----------
 
 export function draftToHabitWrite(draft: HabitDraft, startDate: string): HabitWrite {
-  const targetType = TARGET_TO_API[draft.targetType];
-  const targetValue =
-    draft.targetType === 'count' ? Math.max(1, draft.targetCount) : draft.targetType === 'duration' ? Math.max(1, draft.targetDuration) : 1;
-  const targetUnit = draft.targetType === 'count' ? 'times' : draft.targetType === 'duration' ? 'min' : '';
+  const targetType: TargetType = 'COUNT';
+  const targetValue = Math.max(1, draft.targetCount);
+  const targetUnit = 'times';
+  const reminderTimes = draft.reminderEnabled
+    ? Array.from(
+        { length: targetValue },
+        (_, index) => draft.reminderTimes[index] ?? '08:00',
+      )
+    : [];
 
   let frequency_type: 'DAILY' | 'WEEKDAYS' = 'DAILY';
   let weekdays: number[] = [];
-  if (draft.frequency === 'weekdays') {
-    frequency_type = 'WEEKDAYS';
-    weekdays = MON_TO_FRI;
-  } else if (draft.frequency === 'custom') {
+  if (draft.frequency === 'custom') {
     frequency_type = 'WEEKDAYS';
     weekdays = uiDaysToApi(draft.customDays);
   }
@@ -191,13 +190,16 @@ export function draftToHabitWrite(draft: HabitDraft, startDate: string): HabitWr
     color: colorKeyToHex(draft.colorKey),
     target_type: targetType,
     target_value: targetValue,
+    duration_minutes: draft.durationEnabled ? Math.max(0, draft.targetDuration) : null,
     target_unit: targetUnit,
     time_of_day: TOD_TO_API[draft.timeOfDay],
     start_date: startDate,
     schedule: {
       frequency_type,
       weekdays,
-      reminder_time: draft.reminderEnabled && draft.reminderTime ? timeToApi(draft.reminderTime) : null,
+      reminder_time: reminderTimes[0] ? timeToApi(reminderTimes[0]) : null,
+      reminder_times: reminderTimes.map(timeToApi),
+      reminder_tone: draft.reminderTone,
       skip_allowed: true,
     },
   };
@@ -205,16 +207,20 @@ export function draftToHabitWrite(draft: HabitDraft, startDate: string): HabitWr
 
 export function habitToDraft(habit: Habit): HabitDraft {
   const s = habit.schedule;
+  // The wizard now uses count targets exclusively. Preserve old duration-only
+  // habits as a single timed count when the user edits them.
+  const targetType: UiTargetType = 'count';
+  const targetCount = habit.target_type === 'COUNT' ? habit.target_value : 1;
+  const savedReminderTimes = (s?.reminder_times?.length ? s.reminder_times : s?.reminder_time ? [s.reminder_time] : []).map((t) => timeFromApi(t));
+  const reminderTimes = Array.from(
+    { length: targetCount },
+    (_, index) => savedReminderTimes[index] ?? offsetTime(savedReminderTimes[0] ?? '08:00', index),
+  );
   let frequency: UiFrequency = 'daily';
   let customDays: number[] = [];
   if (s?.frequency_type === 'WEEKDAYS') {
-    const sorted = [...s.weekdays].sort((a, b) => a - b);
-    if (sorted.length === 5 && sorted.every((d, i) => d === MON_TO_FRI[i])) {
-      frequency = 'weekdays';
-    } else {
-      frequency = 'custom';
-      customDays = apiDaysToUi(s.weekdays);
-    }
+    frequency = 'custom';
+    customDays = apiDaysToUi(s.weekdays);
   } else if (s?.frequency_type === 'TIMES_PER_WEEK') {
     // The app never creates these; if one exists, make the user pick explicit days on edit.
     frequency = 'custom';
@@ -225,13 +231,15 @@ export function habitToDraft(habit: Habit): HabitDraft {
     emoji: habit.icon,
     colorKey: hexToColorKey(habit.color),
     habitType: habitTypeFromApi(habit.habit_type),
-    targetType: TARGET_FROM_API[habit.target_type],
-    targetCount: habit.target_type === 'COUNT' ? habit.target_value : 1,
-    targetDuration: habit.target_type === 'DURATION' ? habit.target_value : 10,
+    targetType,
+    durationEnabled: habit.target_type === 'DURATION' || habit.duration_minutes !== null,
+    targetCount,
+    targetDuration: habit.target_type === 'DURATION' ? habit.target_value : (habit.duration_minutes ?? 10),
     frequency,
     customDays,
-    reminderEnabled: !!s?.reminder_time,
-    reminderTime: timeFromApi(s?.reminder_time),
+    reminderEnabled: !!(s?.reminder_times?.length || s?.reminder_time),
+    reminderTimes,
+    reminderTone: s?.reminder_tone ?? 'DEFAULT',
     timeOfDay: timeOfDayFromApi(habit.time_of_day),
   };
 }

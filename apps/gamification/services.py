@@ -38,7 +38,31 @@ def cfg(key):
 # --------------------------------------------------------------------------
 
 def total_points(user) -> int:
-    return user.point_transactions.aggregate(s=Sum("points"))["s"] or 0
+    return max(0, user.point_transactions.aggregate(s=Sum("points"))["s"] or 0)
+
+
+@transaction.atomic
+def apply_point_penalty(user, amount: int, reason: str) -> int:
+    """Deduct points once, never allowing a user's balance to go below zero."""
+    if amount <= 0:
+        return 0
+    user = type(user).objects.select_for_update().get(pk=user.pk)
+    existing = PointTransaction.objects.filter(
+        user=user, related_type=RT.PENALTY, reason=reason[:255]
+    ).first()
+    if existing:
+        return 0
+    deducted = min(total_points(user), amount)
+    if not deducted:
+        return 0
+    PointTransaction.objects.create(
+        user=user,
+        related_type=RT.PENALTY,
+        points=-deducted,
+        reason=reason[:255],
+    )
+    _sync_user_reward(user)
+    return deducted
 
 
 def checkin_count(user) -> int:
@@ -250,6 +274,8 @@ def on_completion_saved(record) -> None:
     | BAD   | set          | slipped -> no points            |
     """
     occurrence = record.occurrence
+    if record.source == "REMINDER" and record.note == "REMINDER_SKIP_TODAY":
+        return
     is_bad = occurrence.habit.habit_type == "BAD"
     positive = (record.completed_at is None) if is_bad else (record.completed_at is not None)
     had_points = PointTransaction.objects.filter(completion_id=record.pk).exists()
@@ -258,6 +284,9 @@ def on_completion_saved(record) -> None:
         on_habit_completed(record)
     elif had_points:
         on_completion_undone(occurrence)      # an earlier positive result was changed
+    elif record.source == "REMINDER":
+        # Reminder-driven Skip today is a penalty action, not a daily-bonus event.
+        return
     elif not is_bad:
         on_good_habit_skipped(occurrence)
 

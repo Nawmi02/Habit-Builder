@@ -27,4 +27,8 @@ app.conf.beat_schedule = {
         "task": "apps.habits.tasks.mark_overdue_occurrences_missed",
         "schedule": crontab(minute="*/5"),  # apply short reminder deadlines promptly
     },
+    "expire-count-start-windows": {
+        "task": "apps.habits.tasks.expire_count_start_windows",
+        "schedule": crontab(minute="*"),
+    },
 }
