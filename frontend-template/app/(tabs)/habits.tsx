@@ -117,12 +117,25 @@ export default function Habits() {
       void refresh();
       if (user) void syncReminders(user).catch(() => {});
     },
+    onError: (error) => {
+      const text = describeError(error);
+      if (Platform.OS === 'web') window.alert(`Could not delete habit\n\n${text}`);
+      else Alert.alert('Could not delete habit', text);
+    },
   });
 
   function askDelete(habit: Habit) {
-    Alert.alert('Delete habit?', `“${habit.name}” will be removed from your habits.`, [
+    const message = `“${habit.name}” will be removed from your habits.`;
+    const remove = () => { setSelected(null); removeHabit.mutate(habit.habit_id); };
+    // Alert.alert shows nothing in a web browser (react-native-web), so the Delete
+    // button never got its confirmation there. Use the browser's own dialog on web.
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Delete habit?\n\n${message}`)) remove();
+      return;
+    }
+    Alert.alert('Delete habit?', message, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => { setSelected(null); removeHabit.mutate(habit.habit_id); } },
+      { text: 'Delete', style: 'destructive', onPress: remove },
     ]);
   }
 
