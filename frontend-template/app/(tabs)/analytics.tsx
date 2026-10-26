@@ -347,7 +347,7 @@ export default function Analytics() {
 
         {!habits.isLoading &&
         !history.isLoading &&
-        !hasHistory ? (
+        !hasHistory && mode === 'Weekly' ? (
           <Card style={styles.emptyCard}>
             <View
               style={[
@@ -760,8 +760,8 @@ export default function Analytics() {
         ) : null}
 
         {mode === 'Heatmap' &&
-        hasHistory &&
-        !history.isLoading ? (
+        !history.isLoading &&
+        !history.isError ? (
           <>
             <Card>
               <Text
@@ -784,6 +784,18 @@ export default function Analytics() {
                 Each square represents a day. Stronger purple means
                 more habits completed or avoided successfully.
               </Text>
+
+              {!hasHistory ? (
+                <Text
+                  style={{
+                    color: colors.muted,
+                    fontSize: 12,
+                    marginTop: 8,
+                  }}
+                >
+                  No activity yet. Your daily progress will show here.
+                </Text>
+              ) : null}
 
               <View style={styles.monthLabels}>
                 {[0, 4, 8, 12, 16, 20, 24].map((week) => {
@@ -855,13 +867,12 @@ export default function Analytics() {
                             style={[
                               styles.heatSquare,
                               {
-                                backgroundColor: cell
+                                backgroundColor: cell && cell.intensity > 0
                                   ? intensityColors[cell.intensity]
-                                  : 'transparent',
-                                borderColor:
-                                  date <= today
-                                    ? 'transparent'
-                                    : colors.border,
+                                  : colors.bg,
+                                borderColor: cell && cell.intensity > 0
+                                  ? 'transparent'
+                                  : colors.border,
                               },
                             ]}
                           />
@@ -1404,6 +1415,7 @@ const styles = StyleSheet.create({
     width: 9,
     height: 12,
     borderRadius: 2,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   legendRow: {
     flexDirection: 'row',
