@@ -172,16 +172,15 @@ Install the exact npm dependency versions from `frontend-template/package-lock.j
 
 ## App Interface
 
-The app includes these main screens and user flows:
-
-1. **Login or Sign up** — `docs/screenshots/auth.png`
-2. **Home dashboard** — `docs/screenshots/home-dashboard.png`
-3. **Create Habit wizard** — `docs/screenshots/create-habit.png`
-4. **Habit list and details** — `docs/screenshots/habits.png`
-5. **Start and complete habit flow** — `docs/screenshots/habit-progress.png`
-6. **Analytics heatmap** — `docs/screenshots/analytics-heatmap.png`
-7. **Progress, streaks, and badges** — `docs/screenshots/progress-badges.png`
-8. **Reminder notification** — `docs/screenshots/reminder-notification.png`
+| Login or Sign up | Home dashboard |
+| --- | --- |
+| <img src="docs/screenshots/auth.jpeg" alt="Login and sign up screen" width="240"> | <img src="docs/screenshots/home.jpeg" alt="Home dashboard" width="240"> |
+| Create Habit wizard | Habit list and details |
+| <img src="docs/screenshots/create.jpeg" alt="Create Habit wizard" width="240"> | <img src="docs/screenshots/habits.jpeg" alt="Habit list and details" width="240"> |
+| Start and complete habit flow | Analytics heatmap |
+| <img src="docs/screenshots/habit%20start.jpeg" alt="Start and complete habit flow" width="240"> | <img src="docs/screenshots/analytics.jpeg" alt="Analytics heatmap" width="240"> |
+| Progress, streaks, and badges | Reminder notification |
+| <img src="docs/screenshots/badges.jpeg" alt="Progress, streaks, and badges" width="240"> | <img src="docs/screenshots/reminder.jpeg" alt="Reminder notification" width="240"> |
 
 ## Notifications note
 
